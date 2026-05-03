@@ -1,0 +1,4 @@
+flask
+werkzeug
+scikit-learn
+numpy
