@@ -1117,7 +1117,7 @@ def login():
     </form>
 
     <div class="auth-links">
-        Don't have an account? <a href="/register">Register here</a>
+        Don't have an account? Click SIGN UP above!
     </div>
     """
 
@@ -1221,7 +1221,7 @@ def register():
     </form>
 
     <div class="auth-links">
-        Already have an account? Click SIGN UP above!
+        Already have an account? Go to LOGIN!
     </div>
     """
 
