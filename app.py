@@ -1221,7 +1221,7 @@ def register():
     </form>
 
     <div class="auth-links">
-        Already have an account? <a href="/login">Sign in</a>
+        Already have an account? Click SIGN UP above!
     </div>
     """
 
