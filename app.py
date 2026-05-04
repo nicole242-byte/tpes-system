@@ -1053,7 +1053,7 @@ def _register_form():
         </select>
       </div>
       <div class="form-group">
-        <label>Department (optional)</label>
+        <label>Department (FOR TEACHERS ONLY)</label>
         <input type="text" name="department" placeholder="e.g. Science..." autocomplete="off">
       </div>
       <button type="submit" class="btn btn-primary" style="width:100%;padding:12px;font-size:1rem;margin-top:4px;">Create Account &nbsp;→</button>
