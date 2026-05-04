@@ -1111,7 +1111,7 @@ def login():
         </div>
 
         <button type="submit" class="btn btn-primary" style="width:100%;">
-            Sign In →
+            Login →
         </button>
 
     </form>
