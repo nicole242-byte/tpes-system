@@ -1135,8 +1135,6 @@ def login():
 
 @app.route("/register", methods=["GET","POST"])
 def register():
-     if request.method == "GET":
-        return redirect(url_for("login"))
     if request.method == "POST":
         name = request.form.get("name","").strip()
         email = request.form.get("email","").strip().lower()
