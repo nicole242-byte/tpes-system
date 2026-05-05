@@ -44,10 +44,17 @@ OTP_STORE: dict = {}
 # ─────────────────────────────────────────────
 #  BLOCK / SEMESTER CONFIG
 # ─────────────────────────────────────────────
-BLOCKS = ["Block A", "Block B", "Block C", "Block D", "Block E",
-          "Block F", "Block G", "Block H", "1-A", "1-B", "1-C",
-          "2-A", "2-B", "2-C", "3-A", "3-B", "3-C",
-          "4-A", "4-B", "4-C"]
+BLOCKS = [
+    "BSCS 1", "BSCS 2", "BSCS 3", "BSCS 4",
+    "ACT 1", "ACT 2",
+    "BSED English 1", "BSED English 2", "BSED English 3", "BSED English 4",
+    "BSED Mathematics 1", "BSED Mathematics 2", "BSED Mathematics 3", "BSED Mathematics 4",
+    "BSED Filipino 1", "BSED Filipino 2", "BSED Filipino 3", "BSED Filipino 4",
+    "BEED 1", "BEED 2", "BEED 3", "BEED 4",
+]
+
+DEPARTMENTS = ["BSCS", "ACT", "BSED English", "BSED Mathematics", "BSED Filipino", "BEED"]
+
 SEMESTERS = ["1st Semester 2024-2025", "2nd Semester 2024-2025",
              "Summer 2025", "1st Semester 2025-2026", "2nd Semester 2025-2026"]
 
@@ -690,6 +697,7 @@ def _login_form():
 def _register_form():
     block_opts = "".join(f'<option value="{b}">{b}</option>' for b in BLOCKS)
     sem_opts   = "".join(f'<option value="{s}">{s}</option>' for s in SEMESTERS)
+    dept_opts  = "".join(f'<option value="{d}">{d}</option>' for d in DEPARTMENTS)
     return f"""
     <form method="POST" action="/register" autocomplete="off" id="regForm">
       <div class="form-group">
@@ -715,13 +723,16 @@ def _register_form():
         </select>
       </div>
       <div class="form-group">
-        <label>Department (optional)</label>
-        <input type="text" name="department" placeholder="e.g. Science..." autocomplete="off">
+        <label>Department</label>
+        <select name="department" id="deptSelect" required>
+          <option value="">— Select Department —</option>
+          {dept_opts}
+        </select>
       </div>
       <!-- Student-only fields -->
       <div id="blockSection" class="form-group">
         <label>Block / Section</label>
-        <select name="block">
+        <select name="block" id="blockSelect">
           <option value="">— Select your block —</option>
           {block_opts}
         </select>
@@ -746,15 +757,38 @@ def _register_form():
       <button type="submit" class="btn btn-primary" style="width:100%;padding:12px;font-size:1rem;margin-top:4px;">Create Account &nbsp;→</button>
     </form>
     <script>
-    // Fetch teacher list via AJAX on page load
     fetch('/api/teachers').then(r=>r.json()).then(teachers=>{{
+      window._allTeachers = teachers;
+      renderTeachers(teachers);
+    }});
+
+    function renderTeachers(teachers) {{
       const sel = document.getElementById('teacherMultiSelect');
+      sel.innerHTML = '';
       teachers.forEach(t=>{{
         const o = document.createElement('option');
         o.value = t.id;
         o.textContent = t.name + (t.department ? ' — '+t.department : '');
         sel.appendChild(o);
       }});
+    }}
+
+    function onRoleChange(sel) {{
+      const isStudent = sel.value === 'student';
+      document.getElementById('teacherSection').style.display = isStudent ? 'block' : 'none';
+      document.getElementById('blockSection').style.display   = isStudent ? 'block' : 'none';
+      document.getElementById('semSection').style.display     = isStudent ? 'block' : 'none';
+    }}
+
+    document.getElementById('deptSelect').addEventListener('change', function() {{
+      const dept = this.value;
+      const role = document.getElementById('roleSelect').value;
+      if (role === 'student' && window._allTeachers) {{
+        const filtered = dept
+          ? window._allTeachers.filter(t => t.department === dept)
+          : window._allTeachers;
+        renderTeachers(filtered);
+      }}
     }});
     </script>"""
 
@@ -931,6 +965,8 @@ def register():
             flash("All fields are required.", "danger")
         elif not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
             flash("Please enter a valid email address.", "danger")
+        elif not department:
+            flash("Please select your department.", "danger")
         elif role not in ("teacher", "student"):
             flash("Invalid role.", "danger")
         elif len(password) < 6:
