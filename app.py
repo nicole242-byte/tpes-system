@@ -1,3 +1,4 @@
+
 """
 ╔══════════════════════════════════════════════════════════════╗
 ║     TEACHER PERFORMANCE EVALUATION SYSTEM                    ║
@@ -497,6 +498,10 @@ select option { background:var(--surface); }
 .block-title { font-family:'Playfair Display',Georgia,serif; font-size:1rem; font-weight:700; display:flex; align-items:center; gap:10px; }
 .block-meta { font-family:'JetBrains Mono',Consolas,monospace; font-size:0.62rem; color:var(--muted); }
 .block-body { padding:0 20px 16px; }
+/* Password match indicator */
+.pw-match-ok  { border-color: var(--success) !important; box-shadow: 0 0 0 3px rgba(34,197,94,0.12) !important; }
+.pw-match-err { border-color: var(--danger)  !important; box-shadow: 0 0 0 3px rgba(255,68,68,0.12)  !important; }
+.pw-error-msg { font-family:'JetBrains Mono',Consolas,monospace; font-size:0.62rem; color:var(--rose); margin-top:6px; display:none; }
 @keyframes fadeIn { from{opacity:0}to{opacity:1} }
 @keyframes fadeSlideDown { from{opacity:0;transform:translateY(-14px)}to{opacity:1;transform:translateY(0)} }
 @keyframes fadeSlideUp { from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)} }
@@ -633,6 +638,27 @@ def page(title, content, role, name, active=""):
 </body>
 </html>"""
 
+# ─────────────────────────────────────────────
+#  PASSWORD MATCH JS (reusable)
+# ─────────────────────────────────────────────
+PW_MATCH_JS = """
+function setupPwMatch(pwId, confirmId, errId) {
+  const pw      = document.getElementById(pwId);
+  const confirm = document.getElementById(confirmId);
+  const err     = document.getElementById(errId);
+  if (!pw || !confirm || !err) return;
+  function check() {
+    if (!confirm.value) { confirm.classList.remove('pw-match-ok','pw-match-err'); err.style.display='none'; return; }
+    const match = pw.value === confirm.value;
+    confirm.classList.toggle('pw-match-ok',  match);
+    confirm.classList.toggle('pw-match-err', !match);
+    err.style.display = match ? 'none' : 'block';
+  }
+  confirm.addEventListener('input', check);
+  pw.addEventListener('input', check);
+}
+"""
+
 AUTH_JS = """
 document.querySelectorAll('.alert').forEach(a=>{
   setTimeout(()=>{a.style.opacity='0';a.style.transition='opacity 0.5s';setTimeout(()=>a.remove(),500);},4500);
@@ -667,6 +693,44 @@ function onRoleChange(sel) {
     semSection.style.display     = 'none';
   }
 }
+// Password match validation
+function setupPwMatch(pwId, confirmId, errId) {
+  const pw      = document.getElementById(pwId);
+  const confirm = document.getElementById(confirmId);
+  const err     = document.getElementById(errId);
+  if (!pw || !confirm || !err) return;
+  function check() {
+    if (!confirm.value) { confirm.classList.remove('pw-match-ok','pw-match-err'); err.style.display='none'; return; }
+    const match = pw.value === confirm.value;
+    confirm.classList.toggle('pw-match-ok',  match);
+    confirm.classList.toggle('pw-match-err', !match);
+    err.style.display = match ? 'none' : 'block';
+  }
+  confirm.addEventListener('input', check);
+  pw.addEventListener('input', check);
+}
+// Block form submit if passwords don't match
+function guardPwForm(formId, pwId, confirmId) {
+  const form = document.getElementById(formId);
+  if (!form) return;
+  form.addEventListener('submit', function(e) {
+    const pw      = document.getElementById(pwId);
+    const confirm = document.getElementById(confirmId);
+    if (pw && confirm && pw.value !== confirm.value) {
+      e.preventDefault();
+      confirm.classList.add('pw-match-err');
+      const err = document.getElementById(confirmId + '_err');
+      if (err) err.style.display = 'block';
+      confirm.focus();
+    }
+  });
+}
+document.addEventListener('DOMContentLoaded', function() {
+  setupPwMatch('login_pw',  'login_confirm_pw',  'login_pw_err');
+  setupPwMatch('reg_pw',    'reg_confirm_pw',    'reg_pw_err');
+  guardPwForm('loginForm',    'login_pw', 'login_confirm_pw');
+  guardPwForm('registerForm', 'reg_pw',   'reg_confirm_pw');
+});
 """
 
 BASE_CSS_TAG = f"<style>{BASE_CSS}</style>"
@@ -676,7 +740,7 @@ BASE_CSS_TAG = f"<style>{BASE_CSS}</style>"
 # ─────────────────────────────────────────────
 def _login_form():
     return """
-    <form method="POST" action="/login" autocomplete="off">
+    <form method="POST" action="/login" autocomplete="off" id="loginForm">
         <div class="form-group">
             <label>Email Address</label>
             <input type="email" name="email" placeholder="you@example.com" required autocomplete="off">
@@ -684,9 +748,17 @@ def _login_form():
         <div class="form-group">
             <label>Password</label>
             <div class="pw-wrap">
-                <input type="password" name="password" placeholder="••••••••" required autocomplete="new-password">
+                <input type="password" name="password" id="login_pw" placeholder="••••••••" required autocomplete="new-password">
                 <button type="button" class="pw-toggle" style="font-family:'JetBrains Mono',monospace;font-size:0.55rem;letter-spacing:0.1em;color:var(--text);">SHOW</button>
             </div>
+        </div>
+        <div class="form-group">
+            <label>Confirm Password</label>
+            <div class="pw-wrap">
+                <input type="password" name="confirm_password" id="login_confirm_pw" placeholder="••••••••" required autocomplete="new-password">
+                <button type="button" class="pw-toggle" style="font-family:'JetBrains Mono',monospace;font-size:0.55rem;letter-spacing:0.1em;color:var(--text);">SHOW</button>
+            </div>
+            <div class="pw-error-msg" id="login_confirm_pw_err">✕ &nbsp;Passwords do not match</div>
             <div style="text-align:right;margin-top:6px;">
                 <a href="/forgot-password" style="font-size:0.78rem;color:var(--muted);font-family:'JetBrains Mono',monospace;letter-spacing:0.05em;">Forgot password?</a>
             </div>
@@ -699,7 +771,7 @@ def _register_form():
     sem_opts   = "".join(f'<option value="{s}">{s}</option>' for s in SEMESTERS)
     dept_opts  = "".join(f'<option value="{d}">{d}</option>' for d in DEPARTMENTS)
     return f"""
-    <form method="POST" action="/register" autocomplete="off" id="regForm">
+    <form method="POST" action="/register" autocomplete="off" id="registerForm">
       <div class="form-group">
         <label>Full Name</label>
         <input type="text" name="name" placeholder="Jane Smith" required autocomplete="off">
@@ -711,9 +783,17 @@ def _register_form():
       <div class="form-group">
         <label>Password</label>
         <div class="pw-wrap">
-          <input type="password" name="password" placeholder="Min. 6 characters" required autocomplete="new-password">
+          <input type="password" name="password" id="reg_pw" placeholder="Min. 6 characters" required autocomplete="new-password">
           <button type="button" class="pw-toggle" style="font-family:'JetBrains Mono',monospace;font-size:0.55rem;letter-spacing:0.1em;color:var(--text);">SHOW</button>
         </div>
+      </div>
+      <div class="form-group">
+        <label>Confirm Password</label>
+        <div class="pw-wrap">
+          <input type="password" name="confirm_password" id="reg_confirm_pw" placeholder="Repeat your password" required autocomplete="new-password">
+          <button type="button" class="pw-toggle" style="font-family:'JetBrains Mono',monospace;font-size:0.55rem;letter-spacing:0.1em;color:var(--text);">SHOW</button>
+        </div>
+        <div class="pw-error-msg" id="reg_confirm_pw_err">✕ &nbsp;Passwords do not match</div>
       </div>
       <div class="form-group">
         <label>Role</label>
@@ -930,8 +1010,20 @@ def index():
 @app.route("/login", methods=["GET","POST"])
 def login():
     if request.method == "POST":
-        email    = request.form.get("email","").strip().lower()
-        password = request.form.get("password","")
+        email            = request.form.get("email","").strip().lower()
+        password         = request.form.get("password","")
+        confirm_password = request.form.get("confirm_password","")
+
+        # ── Confirm password check ──
+        if password != confirm_password:
+            flash("Passwords do not match. Please try again.", "danger")
+            return (AUTH_PAGE_TEMPLATE
+                .replace("__TITLE__","Login").replace("__CSS__",BASE_CSS).replace("__FLASHES__",flash_html())
+                .replace("__LOGIN_FORM__",_login_form()).replace("__REGISTER_FORM__",_register_form())
+                .replace("__LOGIN_ACTIVE__","auth-tab-active").replace("__REGISTER_ACTIVE__","")
+                .replace("__LOGIN_DISPLAY__","block").replace("__REGISTER_DISPLAY__","none")
+                .replace("__AUTH_JS__",AUTH_JS))
+
         try:
             conn = get_db()
             user = conn.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
@@ -952,14 +1044,15 @@ def login():
 @app.route("/register", methods=["GET","POST"])
 def register():
     if request.method == "POST":
-        name       = request.form.get("name","").strip()
-        email      = request.form.get("email","").strip().lower()
-        password   = request.form.get("password","")
-        role       = request.form.get("role","student")
-        department = request.form.get("department","").strip()
-        block      = request.form.get("block","").strip()
-        semester   = request.form.get("semester","").strip()
-        teacher_ids = request.form.getlist("teacher_ids")  # multi-select
+        name             = request.form.get("name","").strip()
+        email            = request.form.get("email","").strip().lower()
+        password         = request.form.get("password","")
+        confirm_password = request.form.get("confirm_password","")
+        role             = request.form.get("role","student")
+        department       = request.form.get("department","").strip()
+        block            = request.form.get("block","").strip()
+        semester         = request.form.get("semester","").strip()
+        teacher_ids      = request.form.getlist("teacher_ids")
 
         if not all([name, email, password]):
             flash("All fields are required.", "danger")
@@ -971,6 +1064,8 @@ def register():
             flash("Invalid role.", "danger")
         elif len(password) < 6:
             flash("Password must be at least 6 characters.", "danger")
+        elif password != confirm_password:
+            flash("Passwords do not match. Please try again.", "danger")
         elif role == "student" and not block:
             flash("Please select your block/section.", "danger")
         elif role == "student" and not semester:
@@ -1310,7 +1405,6 @@ def teacher_dashboard():
     avg_score   = round(avg_r, 2) if avg_r else 0
     ts_raw      = conn.execute("SELECT * FROM teacher_suggestion WHERE teacher_id=?", (tid,)).fetchone()
     ts          = dict(ts_raw) if ts_raw else None
-    # Count students under this teacher
     student_count = conn.execute("SELECT COUNT(DISTINCT student_id) FROM student_teacher WHERE teacher_id=?", (tid,)).fetchone()[0]
     conn.close()
 
@@ -1450,16 +1544,11 @@ def teacher_results():
         <div class="result-card"><div class="section-title" style="margin-bottom:12px">AI Recommendation</div><p style="font-size:0.95rem;color:var(--text-dim);line-height:1.8;font-family:'Crimson Pro',serif;font-style:italic">{ts.get('suggestion_text','')}</p><div style="font-family:'JetBrains Mono',monospace;font-size:0.62rem;color:var(--muted);margin-top:14px">Last updated: {(ts.get('created_at') or '')[:16]}</div></div>"""
     return page("My Results", content, "teacher", session["name"], "results")
 
-# ────────────────────────────────────────────────────
-#  NEW: Teacher → My Students
-# ────────────────────────────────────────────────────
 @app.route("/teacher/students")
 @login_required
 @role_required("teacher")
 def teacher_students():
     tid = session["user_id"]; conn = get_db()
-
-    # Get all students under this teacher, grouped by block + semester
     rows = conn.execute("""
         SELECT u.id, u.name, u.email, u.department,
                st.block, st.semester, st.subject,
@@ -1472,7 +1561,6 @@ def teacher_students():
     """, (tid, tid, tid)).fetchall()
     conn.close()
 
-    # Group by block + semester
     from collections import OrderedDict
     groups = OrderedDict()
     for r in rows:
@@ -1492,11 +1580,10 @@ def teacher_students():
         </div>
         <div class="empty" style="padding:80px">
           <div class="empty-icon">◌</div>
-          <div class="empty-msg">No students assigned yet. Students appear here after they register and select you as their teacher.</div>
+          <div class="empty-msg">No students assigned yet.</div>
         </div>"""
         return page("My Students", content, "teacher", session["name"], "students")
 
-    # Build block group cards
     group_html = ""
     for (semester, block), students in groups.items():
         evals_done   = sum(1 for s in students if s["eval_count"] and s["eval_count"] > 0)
@@ -1593,7 +1680,6 @@ def student_dashboard():
     sid = session["user_id"]; conn = get_db()
     my_evals       = conn.execute("SELECT COUNT(*) FROM evaluation WHERE student_id=?", (sid,)).fetchone()[0]
     teachers_eval  = conn.execute("SELECT COUNT(DISTINCT teacher_id) FROM evaluation WHERE student_id=?", (sid,)).fetchone()[0]
-    # Show teachers assigned to THIS student
     my_teachers    = conn.execute("SELECT COUNT(*) FROM student_teacher WHERE student_id=?", (sid,)).fetchone()[0]
     user_info      = conn.execute("SELECT block, semester FROM users WHERE id=?", (sid,)).fetchone()
     conn.close()
@@ -1629,12 +1715,26 @@ def student_dashboard():
 @role_required("student")
 def student_evaluate():
     sid = session["user_id"]; conn = get_db()
+
     if request.method == "POST":
         teacher_id = request.form.get("teacher_id","").strip()
         scores = request.form.getlist("scores[]"); qids = request.form.getlist("qids[]"); comments = request.form.getlist("comments[]")
-        if not teacher_id: flash("Please select a teacher.", "danger")
-        elif not scores or not qids: flash("Please rate all questions.", "danger")
+
+        if not teacher_id:
+            flash("Please select a teacher.", "danger")
+        elif not scores or not qids:
+            flash("Please rate all questions.", "danger")
         else:
+            # ── ONE EVALUATION PER STUDENT PER TEACHER ──
+            already = conn.execute(
+                "SELECT COUNT(*) FROM evaluation WHERE student_id=? AND teacher_id=?",
+                (sid, int(teacher_id))
+            ).fetchone()[0]
+            if already > 0:
+                conn.close()
+                flash("⚠ You have already submitted an evaluation for this teacher. Each teacher can only be evaluated once.", "warning")
+                return redirect(url_for("student_evaluate"))
+
             try:
                 for i, (qid, score) in enumerate(zip(qids, scores)):
                     comment = comments[i] if i < len(comments) else ""
@@ -1654,18 +1754,32 @@ def student_evaluate():
             except Exception as e:
                 conn.close(); flash(f"Error: {str(e)}", "danger")
 
-    # Prioritise the student's own assigned teachers; fall back to all teachers
-    my_teacher_ids = [r["teacher_id"] for r in conn.execute("SELECT teacher_id FROM student_teacher WHERE student_id=?", (sid,)).fetchall()]
+    # ── GET: build form ──
+    # Teachers already evaluated by this student
+    evaluated_teacher_ids = set(
+        r["teacher_id"] for r in conn.execute(
+            "SELECT DISTINCT teacher_id FROM evaluation WHERE student_id=?", (sid,)
+        ).fetchall()
+    )
+
+    my_teacher_ids = set(
+        r["teacher_id"] for r in conn.execute(
+            "SELECT teacher_id FROM student_teacher WHERE student_id=?", (sid,)
+        ).fetchall()
+    )
     all_teachers   = conn.execute("SELECT id,name,department FROM users WHERE role='teacher' ORDER BY name").fetchall()
     questions      = conn.execute("SELECT * FROM question ORDER BY id").fetchall()
     conn.close()
 
-    # Split: my teachers vs others
     my_teachers_list    = [t for t in all_teachers if t["id"] in my_teacher_ids]
     other_teachers_list = [t for t in all_teachers if t["id"] not in my_teacher_ids]
 
-    def teacher_opt(t, group=""):
-        return f'<option value="{t["id"]}">{t["name"]}{(" — "+t["department"]) if t["department"] else ""}</option>'
+    def teacher_opt(t):
+        already_done = t["id"] in evaluated_teacher_ids
+        disabled = 'disabled' if already_done else ''
+        style = 'style="color:var(--muted);font-style:italic"' if already_done else ''
+        label = f'{t["name"]}{(" — "+t["department"]) if t["department"] else ""}{"  ✓ Already Evaluated" if already_done else ""}'
+        return f'<option value="{t["id"]}" {disabled} {style}>{label}</option>'
 
     teacher_opts = ""
     if my_teachers_list:
@@ -1677,10 +1791,24 @@ def student_evaluate():
         teacher_opts += "".join(teacher_opt(t) for t in other_teachers_list)
         teacher_opts += "</optgroup>"
 
+    # Count how many available teachers left
+    available_count = sum(1 for t in all_teachers if t["id"] not in evaluated_teacher_ids)
+    done_count      = len(evaluated_teacher_ids)
+
+    notice = ""
+    if done_count > 0:
+        notice = f"""
+        <div style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:rgba(245,158,11,0.07);border:1px solid rgba(245,158,11,0.20);border-radius:10px;margin-bottom:20px;font-family:'JetBrains Mono',monospace;font-size:0.72rem;color:var(--amber);">
+          ⚠ &nbsp; You have already evaluated <b>{done_count}</b> teacher{'s' if done_count!=1 else ''}. 
+          Each teacher can only be evaluated <b>once</b>. 
+          <span style="color:var(--muted);margin-left:6px">({available_count} remaining)</span>
+        </div>"""
+
     qs_json = [{"id": q["id"], "text": q["question_text"]} for q in questions]
     content = f"""
     <div class="page-header"><div class="page-title">Evaluate a <span class="page-title-accent">Teacher</span></div>
-      <div class="page-subtitle">Anonymous & confidential — comments improve teachers' performance</div></div>
+      <div class="page-subtitle">Anonymous & confidential — one evaluation per teacher</div></div>
+    {notice}
     <div class="card" style="max-width:700px">
       <form method="POST" id="evalForm">
         <div class="form-group"><label>Select Teacher</label>
@@ -1704,7 +1832,10 @@ def student_evaluate():
     const area=document.getElementById('questionsArea');
     const submitArea=document.getElementById('submitArea');
     select.addEventListener('change',()=>{{
-      if(!select.value){{area.innerHTML='<div class="empty" style="padding:32px"><div class="empty-icon" style="font-size:1.8rem">◇</div><div class="empty-msg">Select a teacher above</div></div>';submitArea.style.display='none';return;}}
+      if(!select.value||select.options[select.selectedIndex].disabled){{
+        area.innerHTML='<div class="empty" style="padding:32px"><div class="empty-icon" style="font-size:1.8rem">◇</div><div class="empty-msg">Select an available teacher above</div></div>';
+        submitArea.style.display='none';return;
+      }}
       let html='';
       questions.forEach((q,i)=>{{
         html+=`<div style="margin-bottom:28px;padding-bottom:24px;border-bottom:1px solid var(--border)">
@@ -1796,6 +1927,7 @@ def student_history():
     </table></div>
     <script>function toggleDetails(tid){{const row=document.getElementById('details-'+tid);const btn=document.querySelector('#summary-'+tid+' button');const isOpen=row.style.display!=='none';row.style.display=isOpen?'none':'table-row';btn.innerHTML=isOpen?'▾ &nbsp;View All':'▴ &nbsp;Collapse';}}</script>"""
     return page("My Submissions", content, "student", session["name"], "history")
+
 # ════════════════════════════════════════════════════════════════
 #  Profiles
 # ════════════════════════════════════════════════════════════════    
@@ -1848,6 +1980,7 @@ def profile():
       </table>
     </div>"""
     return page("My Profile", content, user['role'], user['name'], "")
+
 # ════════════════════════════════════════════════════════════════
 #  ERROR HANDLERS
 # ════════════════════════════════════════════════════════════════
@@ -1867,5 +2000,5 @@ if __name__ == "__main__":
     get_classifier()
     print("ML model ready.")
     init_db()
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+port = int(os.environ.get("PORT", 5000))
+app.run(host="0.0.0.0", port=port)
