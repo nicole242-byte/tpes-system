@@ -585,10 +585,10 @@ def sidebar_html(role, name, active=""):
       </div>
       <nav class="sidebar-nav">{nav}</nav>
       <div class="sidebar-footer">
-        <div class="user-info">
-          <div class="avatar">{initials}</div>
-          <div><div class="user-name">{name[:18]}</div><div class="user-role">{role}</div></div>
-        </div>
+        <a href="/profile" class="user-info" style="text-decoration:none;display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;background:var(--surface2);border:1px solid var(--border);margin-bottom:10px;transition:var(--transition);" onmouseover="this.style.borderColor='var(--border2)'" onmouseout="this.style.borderColor='var(--border)'">
+  <div class="avatar">{initials}</div>
+  <div><div class="user-name">{name[:18]}</div><div class="user-role">{role}</div></div>
+</a>
         <a href="/logout-confirm" class="btn btn-secondary" style="width:100%;justify-content:center;font-size:0.85rem;">⎋ &nbsp;Logout</a>
       </div>
     </aside>"""
@@ -1760,7 +1760,58 @@ def student_history():
     </table></div>
     <script>function toggleDetails(tid){{const row=document.getElementById('details-'+tid);const btn=document.querySelector('#summary-'+tid+' button');const isOpen=row.style.display!=='none';row.style.display=isOpen?'none':'table-row';btn.innerHTML=isOpen?'▾ &nbsp;View All':'▴ &nbsp;Collapse';}}</script>"""
     return page("My Submissions", content, "student", session["name"], "history")
+# ════════════════════════════════════════════════════════════════
+#  Profiles
+# ════════════════════════════════════════════════════════════════    
+@app.route("/profile")
+@login_required
+def profile():
+    conn = get_db()
+    user = conn.execute("SELECT * FROM users WHERE id=?", (session["user_id"],)).fetchone()
+    conn.close()
+    
+    block_row = f"""
+    <tr><td style="font-family:'JetBrains Mono',monospace;font-size:0.72rem;color:var(--muted);padding:10px 0">Block / Section</td>
+    <td style="padding:10px 0;font-weight:600">{user['block'] or '—'}</td></tr>
+    <tr><td style="font-family:'JetBrains Mono',monospace;font-size:0.72rem;color:var(--muted);padding:10px 0">Semester</td>
+    <td style="padding:10px 0">{user['semester'] or '—'}</td></tr>""" if user['role'] == 'student' else ""
 
+    dept_row = f"""
+    <tr><td style="font-family:'JetBrains Mono',monospace;font-size:0.72rem;color:var(--muted);padding:10px 0">Department</td>
+    <td style="padding:10px 0">{user['department'] or '—'}</td></tr>""" if user['role'] in ('teacher','admin') else ""
+
+    initials = "".join(w[0].upper() for w in user['name'].split()[:2])
+
+    content = f"""
+    <div class="page-header">
+      <div class="page-title">My <span class="page-title-accent">Profile</span></div>
+      <div class="page-subtitle">Your account information</div>
+    </div>
+    <div class="card" style="max-width:520px">
+      <div style="display:flex;align-items:center;gap:18px;margin-bottom:28px;padding-bottom:24px;border-bottom:1px solid var(--border)">
+        <div style="width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,var(--crimson-dk),var(--crimson));display:flex;align-items:center;justify-content:center;font-weight:900;font-size:1.5rem;color:#fff;font-family:'Playfair Display',serif;flex-shrink:0;box-shadow:0 0 24px rgba(220,20,60,0.35)">{initials}</div>
+        <div>
+          <div style="font-family:'Playfair Display',serif;font-size:1.4rem;font-weight:900;color:var(--text)">{user['name']}</div>
+          <span class="badge badge-{user['role']}" style="margin-top:6px">{user['role'].upper()}</span>
+        </div>
+      </div>
+      <table style="width:100%;border-collapse:collapse">
+        <tr><td style="font-family:'JetBrains Mono',monospace;font-size:0.72rem;color:var(--muted);padding:10px 0">Full Name</td>
+          <td style="padding:10px 0;font-weight:600">{user['name']}</td></tr>
+        <tr style="border-top:1px solid rgba(61,26,29,0.3)">
+          <td style="font-family:'JetBrains Mono',monospace;font-size:0.72rem;color:var(--muted);padding:10px 0">Email</td>
+          <td style="padding:10px 0;color:var(--rose)">{user['email']}</td></tr>
+        <tr style="border-top:1px solid rgba(61,26,29,0.3)">
+          <td style="font-family:'JetBrains Mono',monospace;font-size:0.72rem;color:var(--muted);padding:10px 0">Role</td>
+          <td style="padding:10px 0"><span class="badge badge-{user['role']}">{user['role']}</span></td></tr>
+        {'<tr style="border-top:1px solid rgba(61,26,29,0.3)">'+dept_row+'</tr>' if dept_row else ''}
+        {'<tr style="border-top:1px solid rgba(61,26,29,0.3)">'+block_row+'</tr>' if block_row else ''}
+        <tr style="border-top:1px solid rgba(61,26,29,0.3)">
+          <td style="font-family:'JetBrains Mono',monospace;font-size:0.72rem;color:var(--muted);padding:10px 0">Member Since</td>
+          <td style="padding:10px 0;font-family:'JetBrains Mono',monospace;font-size:0.8rem;color:var(--text-dim)">{user['created_at'][:10]}</td></tr>
+      </table>
+    </div>"""
+    return page("My Profile", content, user['role'], user['name'], "")
 # ════════════════════════════════════════════════════════════════
 #  ERROR HANDLERS
 # ════════════════════════════════════════════════════════════════
