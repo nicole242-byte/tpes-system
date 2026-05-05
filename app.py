@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from functools import wraps
+import threading
 # ── scikit-learn ML ──
 import numpy as np
 from sklearn.pipeline import Pipeline
@@ -1164,12 +1165,17 @@ def forgot_password():
                     If you did not request a password reset, ignore this email.
                   </p>
                 </div>"""
-                ok = send_email(email, "TPES — Password Reset Code", html)
-                if ok:
-                    flash("A 6-digit code has been sent to your email.","success")
+                
+                result = {"ok": False}
+                def send_reset_bg():
+                    result["ok"] = send_email(email, "TPES — Password Reset Code", html)
+                thread = threading.Thread(target=send_reset_bg)
+                thread.start()
+                thread.join(timeout=6)
+                if result["ok"]:
+                    flash("A 6-digit code has been sent to your email.", "success")
                 else:
-                    # Dev/demo fallback: show code in flash if SMTP not configured
-                    flash(f"(Dev mode) Your reset code is: {code}","info")
+                    flash(f"(Dev mode) Your reset code is: {code}", "info")
             else:
                 # Don't reveal whether the email exists
                 flash("If that email is registered, a reset code was sent.","info")
