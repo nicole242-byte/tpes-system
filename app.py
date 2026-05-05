@@ -4,21 +4,18 @@
 ║     Flask + SQLite + ML (scikit-learn: TF-IDF + LR)         ║
 ║     Crimson Theme Edition — ML-Upgraded                      ║
 ╚══════════════════════════════════════════════════════════════╝
-
-INSTALL REQUIREMENTS:
-    pip install flask werkzeug scikit-learn numpy
-
+INSTALL REQUIREMENTS:    pip install flask werkzeug scikit-learn numpy
 RUN:
     python app.py
 """
-
 from flask import (Flask, render_template_string, request, redirect,
                    url_for, session, flash, jsonify)
 from werkzeug.security import generate_password_hash, check_password_hash
-import sqlite3, os, re, json
-from datetime import datetime
+import sqlite3, os, re, json, secrets, smtplib
+from datetime import datetime, timedelta
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from functools import wraps
-
 # ── scikit-learn ML ──
 import numpy as np
 from sklearn.pipeline import Pipeline
@@ -27,18 +24,25 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import LabelEncoder
 import warnings
 warnings.filterwarnings("ignore")
-
 # ─────────────────────────────────────────────
 #  APP CONFIG
 # ─────────────────────────────────────────────
 app = Flask(__name__)
 app.secret_key = "TPES_SECRET_KEY_2025_change_in_prod"
 DB = "tpes.db"
-
+# ─────────────────────────────────────────────
+#  EMAIL CONFIG  — update with real SMTP creds
+# ─────────────────────────────────────────────
+SMTP_HOST     = "smtp.gmail.com"
+SMTP_PORT     = 587
+SMTP_USER     = "nicolejanegallardo242@gmail.com"          # ← change this
+SMTP_PASSWORD = "qvlb atee wqtq rlka"             # ← change this (Gmail App Password)
+FROM_EMAIL    = "TPES System <nicolejanegallardo242@gmail.com>"
+# In-memory OTP store: { email: {"code": "123456", "expires": datetime} }
+OTP_STORE: dict = {}
 # ═══════════════════════════════════════════════════════════════
 #  REAL ML ENGINE  — scikit-learn TF-IDF + Logistic Regression
 # ═══════════════════════════════════════════════════════════════
-
 TRAINING_DATA = [
     # Excellent (avg score ~ 4.5-5)
     ("excellent teacher explains concepts very clearly and is always prepared", 5, "Excellent"),
@@ -54,7 +58,6 @@ TRAINING_DATA = [
     ("teacher is very knowledgeable and explains everything perfectly", 5, "Excellent"),
     ("love this class teacher is the best very engaging", 5, "Excellent"),
     ("inspired me to learn more highly recommend this professor", 5, "Excellent"),
-
     # Good (avg score ~ 3.5-4.4)
     ("good teacher explains well but sometimes goes too fast", 4, "Good"),
     ("generally effective and organized could be more engaging", 4, "Good"),
@@ -66,7 +69,6 @@ TRAINING_DATA = [
     ("mostly effective teacher with good command of subject", 4, "Good"),
     ("decent instructor explains concepts well minor issues", 4, "Good"),
     ("good teacher fair in grading and mostly engaging", 4, "Good"),
-
     # Average (avg score ~ 2.5-3.4)
     ("average teacher sometimes unclear explanations", 3, "Average"),
     ("mediocre teaching style not very engaging", 3, "Average"),
@@ -78,7 +80,6 @@ TRAINING_DATA = [
     ("class is okay teacher is not very dynamic", 3, "Average"),
     ("moderate teacher fair but could do much better", 2, "Average"),
     ("teaching is passable but lacks clarity and structure", 3, "Average"),
-
     # Needs Improvement (avg score ~ 1.5-2.4)
     ("poor explanations often unclear and confusing", 2, "Needs Improvement"),
     ("often unprepared and late to class disappointing", 2, "Needs Improvement"),
@@ -90,7 +91,6 @@ TRAINING_DATA = [
     ("ineffective teaching method confusing and hard to follow", 2, "Needs Improvement"),
     ("disappointing instructor lacks organization", 2, "Needs Improvement"),
     ("needs to improve communication and clarity", 1, "Needs Improvement"),
-
     # Poor (avg score ~ 1-1.4)
     ("terrible teacher worst class I have attended ever", 1, "Poor"),
     ("awful teaching no structure boring and rude", 1, "Poor"),
@@ -103,10 +103,8 @@ TRAINING_DATA = [
     ("awful monotone boring and completely disorganized class", 1, "Poor"),
     ("poor teacher fails to deliver material and is unreliable", 1, "Poor"),
 ]
-
 class TPESClassifier:
     LABELS = ["Poor", "Needs Improvement", "Average", "Good", "Excellent"]
-
     def __init__(self):
         self.text_pipeline = Pipeline([
             ("tfidf", TfidfVectorizer(
@@ -125,20 +123,17 @@ class TPESClassifier:
         ])
         self._trained = False
         self._train()
-
     def _train(self):
         texts  = [d[0] for d in TRAINING_DATA]
         labels = [d[2] for d in TRAINING_DATA]
         self.text_pipeline.fit(texts, labels)
         self._trained = True
-
     def predict(self, comments: str, avg_score: float) -> dict:
         if   avg_score >= 4.5: score_label = "Excellent"
         elif avg_score >= 3.5: score_label = "Good"
         elif avg_score >= 2.5: score_label = "Average"
         elif avg_score >= 1.5: score_label = "Needs Improvement"
         else:                  score_label = "Poor"
-
         if not comments or len(comments.strip()) < 10:
             return {
                 "label":      score_label,
@@ -147,29 +142,23 @@ class TPESClassifier:
                 "score_label": score_label,
                 "method":     "score_only",
             }
-
         proba = self.text_pipeline.predict_proba([comments])[0]
         classes = self.text_pipeline.classes_
         text_proba_dict = {c: round(float(p) * 100, 1) for c, p in zip(classes, proba)}
-
         score_idx = self.LABELS.index(score_label)
         score_dist = np.zeros(len(self.LABELS))
         for i in range(len(self.LABELS)):
             score_dist[i] = np.exp(-0.5 * ((i - score_idx) / 0.8) ** 2)
         score_dist /= score_dist.sum()
-
         text_dist = np.array([
             text_proba_dict.get(lbl, 0) / 100 for lbl in self.LABELS
         ])
-
         text_weight = min(0.65, 0.35 + len(comments.split()) * 0.01)
         score_weight = 1 - text_weight
         combined = text_weight * text_dist + score_weight * score_dist
-
         final_idx   = int(np.argmax(combined))
         final_label = self.LABELS[final_idx]
         confidence  = round(float(combined[final_idx]) * 100, 1)
-
         return {
             "label":       final_label,
             "confidence":  confidence,
@@ -177,13 +166,11 @@ class TPESClassifier:
             "score_label": score_label,
             "method":      "ensemble",
         }
-
     def _score_confidence(self, avg: float) -> float:
         boundaries = [1.5, 2.5, 3.5, 4.5]
         dists = [abs(avg - b) for b in boundaries]
         min_dist = min(dists)
         return round(min(95, 50 + min_dist * 35), 1)
-
     def get_suggestion(self, avg_score: float, label: str, confidence: float) -> str:
         conf_note = f" (ML confidence: {confidence}%)" if confidence else ""
         suggestions = {
@@ -214,22 +201,16 @@ class TPESClassifier:
             ),
         }
         return suggestions.get(label, "No suggestion available.")
-
-
 _classifier = None
-
 def get_classifier() -> TPESClassifier:
     global _classifier
     if _classifier is None:
         _classifier = TPESClassifier()
     return _classifier
-
-
 def predict_sentiment(text: str, avg_score: float) -> str:
     clf = get_classifier()
     result = clf.predict(text or "", avg_score)
     return result["label"]
-
 def get_performance_color(prediction):
     colors = {
         "Excellent":         "#22c55e",
@@ -239,7 +220,6 @@ def get_performance_color(prediction):
         "Poor":              "#7f1d1d"
     }
     return colors.get(prediction, "#6b7280")
-
 # ─────────────────────────────────────────────
 #  HELPER — safe dict-like access for sqlite3.Row
 # ─────────────────────────────────────────────
@@ -249,7 +229,6 @@ def row_get(row, key, default=None):
         return row[key] if key in row.keys() else default
     except Exception:
         return default
-
 # ─────────────────────────────────────────────
 #  DATABASE
 # ─────────────────────────────────────────────
@@ -258,7 +237,6 @@ def get_db():
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
-
 def init_db():
     conn = get_db()
     c = conn.cursor()
@@ -272,13 +250,11 @@ def init_db():
         department  TEXT DEFAULT '',
         created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
     );
-
     CREATE TABLE IF NOT EXISTS question (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
         question_text TEXT NOT NULL,
         created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
     );
-
     CREATE TABLE IF NOT EXISTS evaluation (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         teacher_id  INTEGER NOT NULL,
@@ -291,7 +267,6 @@ def init_db():
         FOREIGN KEY(student_id)  REFERENCES users(id) ON DELETE CASCADE,
         FOREIGN KEY(question_id) REFERENCES question(id) ON DELETE CASCADE
     );
-
     CREATE TABLE IF NOT EXISTS teacher_suggestion (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         teacher_id      INTEGER NOT NULL UNIQUE,
@@ -305,14 +280,12 @@ def init_db():
         FOREIGN KEY(teacher_id) REFERENCES users(id) ON DELETE CASCADE
     );
     """)
-
     existing = c.execute("SELECT id FROM users WHERE role='admin'").fetchone()
     if not existing:
         c.execute("""
             INSERT INTO users (name, email, password, role, department)
             VALUES (?, ?, ?, 'admin', 'Administration')
         """, ("Administrator", "admin@tpes.edu", generate_password_hash("admin123")))
-
     if not c.execute("SELECT id FROM question").fetchone():
         questions = [
             "How effectively does the teacher explain concepts?",
@@ -323,7 +296,6 @@ def init_db():
         ]
         for q in questions:
             c.execute("INSERT INTO question (question_text) VALUES (?)", (q,))
-
     for col, definition in [
         ("confidence",  "REAL DEFAULT 0"),
         ("ml_method",   "TEXT DEFAULT ''"),
@@ -333,10 +305,8 @@ def init_db():
             c.execute(f"ALTER TABLE teacher_suggestion ADD COLUMN {col} {definition}")
         except sqlite3.OperationalError:
             pass
-
     conn.commit()
     conn.close()
-
 # ─────────────────────────────────────────────
 #  AUTH DECORATORS
 # ─────────────────────────────────────────────
@@ -348,7 +318,6 @@ def login_required(f):
             return redirect(url_for("login"))
         return f(*args, **kwargs)
     return decorated
-
 def role_required(*roles):
     def decorator(f):
         @wraps(f)
@@ -359,7 +328,6 @@ def role_required(*roles):
             return f(*args, **kwargs)
         return decorated
     return decorator
-
 # ─────────────────────────────────────────────
 #  HELPER — recalculate teacher ML result
 # ─────────────────────────────────────────────
@@ -371,26 +339,21 @@ def recalc_teacher(teacher_id):
         FROM evaluation e
         WHERE e.teacher_id = ?
     """, (teacher_id,)).fetchall()
-
     if not rows:
         c.execute("DELETE FROM teacher_suggestion WHERE teacher_id=?", (teacher_id,))
         conn.commit()
         conn.close()
         return
-
     scores   = [r["score"] for r in rows]
     comments = " ".join(r["comment"] or "" for r in rows)
     avg      = round(sum(scores) / len(scores), 2)
-
     clf    = get_classifier()
     result = clf.predict(comments, avg)
     pred   = result["label"]
     conf   = result["confidence"]
     method = result["method"]
     tproba = json.dumps(result["text_proba"])
-
     suggestion = clf.get_suggestion(avg, pred, conf)
-
     existing = c.execute(
         "SELECT id FROM teacher_suggestion WHERE teacher_id=?", (teacher_id,)).fetchone()
     if existing:
@@ -406,17 +369,13 @@ def recalc_teacher(teacher_id):
               (teacher_id, suggestion_text, prediction, average_score, confidence, ml_method, text_proba)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (teacher_id, suggestion, pred, avg, conf, method, tproba))
-
     conn.commit()
     conn.close()
-
 # ════════════════════════════════════════════════════════════════
 #  CRIMSON THEME CSS
 # ════════════════════════════════════════════════════════════════
-
 BASE_CSS = """
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
 :root {
   --bg:         #0d0608;
   --bg2:        #110a0b;
@@ -451,7 +410,6 @@ BASE_CSS = """
   --glow:       0 0 24px rgba(220,20,60,0.3);
   --transition: all 0.22s cubic-bezier(0.4,0,0.2,1);
 }
-
 html { font-size: 15px; }
 body {
   font-family: 'Crimson Pro', Georgia, serif;
@@ -474,9 +432,7 @@ a:hover { color: var(--blush); }
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: var(--surface); }
 ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 99px; }
-
 .layout { display: flex; min-height: 100vh; position: relative; z-index: 1; }
-
 .sidebar {
   width: 248px; flex-shrink: 0;
   background: var(--surface); border-right: 1px solid var(--border);
@@ -553,9 +509,7 @@ a:hover { color: var(--blush); }
 }
 .user-name { font-size: 0.85rem; font-weight: 600; color: var(--text); }
 .user-role { font-family: 'JetBrains Mono', Consolas, monospace; font-size: 0.58rem; color: var(--muted); text-transform: uppercase; }
-
 .main { flex: 1; margin-left: 248px; padding: 36px 40px; min-height: 100vh; }
-
 .page-header {
   margin-bottom: 32px; animation: fadeSlideDown 0.5s ease forwards;
   padding-bottom: 24px; border-bottom: 1px solid var(--border); position: relative;
@@ -568,15 +522,12 @@ a:hover { color: var(--blush); }
 .page-title-accent { color: var(--crimson); }
 .page-subtitle { font-size: 0.9rem; color: var(--muted); margin-top: 5px; font-style: italic; }
 .page-actions { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
-
 .card {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius-lg); padding: 24px; transition: var(--transition); position: relative; overflow: hidden;
 }
 .card:hover { border-color: var(--border2); box-shadow: var(--shadow); }
-
 .cards-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px,1fr)); gap: 16px; margin-bottom: 32px; }
-
 .stat-card {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius-lg); padding: 22px;
@@ -595,7 +546,6 @@ a:hover { color: var(--blush); }
 .stat-icon { font-size: 1.4rem; position: relative; z-index: 1; }
 .stat-value { font-family: 'Playfair Display', Georgia, serif; font-size: 2.2rem; font-weight: 900; color: var(--text); position: relative; z-index: 1; line-height: 1; }
 .stat-label { font-family: 'JetBrains Mono', Consolas, monospace; font-size: 0.62rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.15em; position: relative; z-index: 1; }
-
 .btn {
   display: inline-flex; align-items: center; gap: 7px; padding: 9px 20px; border-radius: 8px;
   font-size: 0.88rem; font-weight: 600; cursor: pointer; transition: var(--transition);
@@ -612,7 +562,6 @@ a:hover { color: var(--blush); }
 .btn-danger { background: rgba(220,20,60,0.12); color: var(--rose); border: 1px solid rgba(220,20,60,0.25); }
 .btn-danger:hover { background: rgba(220,20,60,0.22); }
 .btn-sm { padding: 5px 13px; font-size: 0.8rem; border-radius: 6px; }
-
 .table-wrap { overflow-x: auto; border-radius: var(--radius-lg); border: 1px solid var(--border); background: var(--surface); }
 table { width: 100%; border-collapse: collapse; }
 thead { background: var(--surface2); }
@@ -620,7 +569,6 @@ th { padding: 13px 18px; text-align: left; font-family: 'JetBrains Mono', Consol
 td { padding: 14px 18px; font-size: 0.95rem; color: var(--text); border-bottom: 1px solid rgba(61,26,29,0.4); vertical-align: middle; }
 tr:last-child td { border-bottom: none; }
 tbody tr:hover { background: var(--surface2); }
-
 .form-group { margin-bottom: 20px; }
 label { display: block; margin-bottom: 7px; font-family: 'JetBrains Mono', Consolas, monospace; font-size: 0.65rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.15em; }
 input[type=text], input[type=email], input[type=password], select, textarea {
@@ -631,7 +579,6 @@ input:focus, select:focus, textarea:focus { border-color: var(--crimson); box-sh
 input::placeholder, textarea::placeholder { color: var(--muted2); }
 textarea { resize: vertical; min-height: 85px; }
 select option { background: var(--surface); }
-
 /* Password field wrapper */
 .pw-wrap { position: relative; }
 .pw-wrap input { padding-right: 44px; }
@@ -642,13 +589,11 @@ select option { background: var(--surface); }
   display: flex; align-items: center; justify-content: center;
 }
 .pw-toggle:hover { color: var(--rose); }
-
 .alert { padding: 12px 16px; border-radius: 9px; margin-bottom: 16px; font-size: 0.95rem; display: flex; align-items: center; gap: 10px; animation: fadeIn 0.4s ease; }
 .alert-success { background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.2); color: #4ade80; }
 .alert-danger   { background: rgba(220,20,60,0.12); border: 1px solid rgba(220,20,60,0.25); color: var(--rose); }
 .alert-warning  { background: rgba(245,158,11,0.1);  border: 1px solid rgba(245,158,11,0.2);  color: var(--amber); }
 .alert-info     { background: rgba(251,146,60,0.1);   border: 1px solid rgba(251,146,60,0.2);  color: var(--info); }
-
 .badge { display: inline-block; padding: 3px 10px; border-radius: 99px; font-family: 'JetBrains Mono', Consolas, monospace; font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.08em; border: 1px solid transparent; }
 .badge-admin   { background: rgba(220,20,60,0.15); color: var(--rose); border-color: rgba(220,20,60,0.2); }
 .badge-teacher { background: rgba(201,150,58,0.15); color: var(--gold-lt); border-color: rgba(201,150,58,0.2); }
@@ -658,16 +603,13 @@ select option { background: var(--surface); }
 .badge-average   { background: rgba(249,115,22,0.12); color: #fb923c; border-color: rgba(249,115,22,0.2); }
 .badge-needs     { background: rgba(220,20,60,0.12); color: var(--rose); border-color: rgba(220,20,60,0.2); }
 .badge-poor      { background: rgba(139,0,0,0.2); color: #ff6666; border-color: rgba(139,0,0,0.3); }
-
 .stars { display: flex; gap: 5px; }
 .star { font-size: 1.4rem; cursor: pointer; color: var(--border2); transition: color 0.12s; user-select: none; }
 .star.filled, .star:hover { color: var(--gold); text-shadow: 0 0 8px rgba(201,150,58,0.6); }
 .rating-input { display: none; }
-
 .score-bar-wrap { display: flex; align-items: center; gap: 12px; }
 .score-bar { flex: 1; height: 6px; background: var(--surface2); border-radius: 99px; overflow: hidden; }
 .score-fill { height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--crimson-dk), var(--crimson), var(--rose)); transition: width 1.2s cubic-bezier(0.4,0,0.2,1); }
-
 .auth-page { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; background: radial-gradient(ellipse 70% 55% at 10% 5%, rgba(139,0,0,0.25) 0%, transparent 50%), var(--bg); }
 .auth-box { width: 100%; max-width: 430px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 44px; box-shadow: var(--shadow-lg); animation: fadeSlideUp 0.5s ease forwards; position: relative; }
 .auth-box::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, var(--crimson), var(--gold), var(--crimson), transparent); }
@@ -676,7 +618,6 @@ select option { background: var(--surface); }
 .auth-title { font-size: 1.5rem; font-weight: 900; font-family: 'Playfair Display', Georgia, serif; color: var(--text); margin-bottom: 4px; letter-spacing: 0.1em; }
 .auth-sub { font-size: 0.88rem; color: var(--muted); font-style: italic; }
 .auth-links { text-align: center; margin-top: 22px; font-size: 0.9rem; color: var(--muted); }
-
 .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 500; align-items: center; justify-content: center; padding: 24px; backdrop-filter: blur(6px); }
 .modal-overlay.open { display: flex; }
 .modal { background: var(--surface); border: 1px solid var(--border2); border-radius: var(--radius-xl); padding: 30px; width: 100%; max-width: 500px; max-height: 90vh; overflow-y: auto; animation: fadeSlideUp 0.3s ease; position: relative; }
@@ -685,18 +626,14 @@ select option { background: var(--surface); }
 .modal-title { font-size: 1.15rem; font-weight: 700; font-family: 'Playfair Display', Georgia, serif; }
 .modal-close { width: 30px; height: 30px; border-radius: 50%; background: var(--surface2); border: 1px solid var(--border); color: var(--muted); cursor: pointer; font-size: 0.9rem; display: flex; align-items: center; justify-content: center; transition: var(--transition); }
 .modal-close:hover { color: var(--rose); }
-
 .section { animation: fadeIn 0.5s ease forwards; margin-bottom: 28px; }
 .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 10px; }
 .section-title { font-size: 1.05rem; font-weight: 700; font-family: 'Playfair Display', Georgia, serif; }
-
 .empty { text-align: center; padding: 64px 24px; color: var(--muted); }
 .empty-icon { font-size: 2.5rem; margin-bottom: 14px; opacity: 0.4; }
 .empty-msg  { font-size: 0.9rem; font-style: italic; }
-
 .hamburger { display: none; position: fixed; top: 14px; left: 14px; z-index: 200; background: var(--surface); border: 1px solid var(--border2); border-radius: 8px; padding: 8px 10px; cursor: pointer; color: var(--text); }
 .separator { border: none; margin: 22px 0; height: 1px; background: linear-gradient(90deg, transparent, var(--border), transparent); }
-
 .ml-panel {
   background: var(--surface2);
   border: 1px solid var(--border);
@@ -750,17 +687,14 @@ select option { background: var(--surface); }
   color: var(--text); line-height: 1;
 }
 .confidence-pct { font-family: 'JetBrains Mono', Consolas, monospace; font-size: 0.62rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.15em; margin-top: 4px; }
-
 .result-card {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius-lg); padding: 24px; position: relative; overflow: hidden;
 }
 .result-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: linear-gradient(90deg, transparent, var(--crimson), var(--gold), var(--crimson), transparent); }
-
 @keyframes fadeIn { from{opacity:0}to{opacity:1} }
 @keyframes fadeSlideDown { from{opacity:0;transform:translateY(-14px)}to{opacity:1;transform:translateY(0)} }
 @keyframes fadeSlideUp { from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)} }
-
 @media (max-width: 768px) {
   .sidebar { transform: translateX(-100%); }
   .sidebar.open { transform: translateX(0); }
@@ -769,13 +703,11 @@ select option { background: var(--surface); }
   .cards-grid { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 480px) { .cards-grid { grid-template-columns: 1fr; } .auth-box { padding: 28px 22px; } }
-
 .text-muted { color: var(--muted); font-size: 0.9rem; }
 .mt-2{margin-top:8px} .mt-3{margin-top:16px} .mt-4{margin-top:24px}
 .flex{display:flex;align-items:center} .flex-between{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}
 .gap-2{gap:8px} .gap-3{gap:12px}
 """
-
 BASE_JS = """
 const ham = document.getElementById('hamburger');
 const sidebar = document.getElementById('sidebar');
@@ -812,7 +744,6 @@ document.querySelectorAll('.score-fill, .proba-bar-fill').forEach(el => {
   setTimeout(() => el.style.width = w + '%', 300);
 });
 """
-
 def sidebar_html(role, name, active=""):
     initials = "".join(w[0].upper() for w in name.split()[:2]) if name else "?"
     if role == "admin":
@@ -869,10 +800,9 @@ def sidebar_html(role, name, active=""):
           <div class="avatar">{initials}</div>
           <div><div class="user-name">{name[:18]}</div><div class="user-role">{role}</div></div>
         </div>
-        <a href="/logout" class="btn btn-secondary" style="width:100%;justify-content:center;font-size:0.85rem;">⎋ &nbsp;Logout</a>
+       <a href="/logout-confirm" class="btn btn-secondary" style="width:100%;justify-content:center;font-size:0.85rem;">⎋ &nbsp;Logout</a>
       </div>
     </aside>"""
-
 def flash_html():
     from flask import get_flashed_messages
     msgs = get_flashed_messages(with_categories=True)
@@ -882,7 +812,6 @@ def flash_html():
         icon = {"success":"✓","danger":"✕","warning":"⚠","info":"ℹ"}.get(cat,"•")
         html += f'<div class="alert alert-{cat}">{icon} {msg}</div>'
     return html
-
 def page(title, content, role, name, active=""):
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -906,7 +835,6 @@ def page(title, content, role, name, active=""):
 <script>{BASE_JS}</script>
 </body>
 </html>"""
-
 # ── Auth page shared JS (show/hide password + alert auto-dismiss) ──
 AUTH_JS = """
 document.querySelectorAll('.alert').forEach(a=>{
@@ -928,7 +856,6 @@ function switchTab(tab) {
   document.getElementById('tabRegister').classList.toggle('auth-tab-active', tab==='register');
 }
 """
-
 AUTH_PAGE_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1020,10 +947,35 @@ input[type="password"]::-ms-clear { display:none !important; }
 <script>__AUTH_JS__</script>
 </body>
 </html>"""
-
 # ════════════════════════════════════════════════════════════════
 #  AUTH ROUTES
 # ════════════════════════════════════════════════════════════════
+# Convenience tag for standalone pages (forgot-password flow)
+BASE_CSS_TAG = f"<style>{BASE_CSS}</style>"
+def _login_form():
+    return """
+    <form method="POST" action="/login" autocomplete="off">
+        <div class="form-group">
+            <label>Email Address</label>
+            <input type="email" name="email" placeholder="you@example.com"
+                required autocomplete="off">
+        </div>
+        <div class="form-group">
+            <label>Password</label>
+            <div class="pw-wrap">
+                <input type="password" name="password"
+                    placeholder="••••••••"
+                    required autocomplete="new-password">
+                <button type="button" class="pw-toggle" style="font-family:'JetBrains Mono',monospace;font-size:0.55rem;letter-spacing:0.1em;color:var(--text);">SHOW</button>
+            </div>
+            <div style="text-align:right;margin-top:6px;">
+                <a href="/forgot-password" style="font-size:0.78rem;color:var(--muted);font-family:'JetBrains Mono',monospace;letter-spacing:0.05em;">Forgot password?</a>
+            </div>
+        </div>
+        <button type="submit" class="btn btn-primary" style="width:100%;">
+            Sign In →
+        </button>
+    </form>"""
 def _register_form():
     return """
     <form method="POST" action="/register" autocomplete="off">
@@ -1053,28 +1005,72 @@ def _register_form():
         </select>
       </div>
       <div class="form-group">
-        <label>Department (FOR TEACHERS ONLY(optional for student))</label>
+        <label>Department (optional)</label>
         <input type="text" name="department" placeholder="e.g. Science..." autocomplete="off">
       </div>
       <button type="submit" class="btn btn-primary" style="width:100%;padding:12px;font-size:1rem;margin-top:4px;">Create Account &nbsp;→</button>
     </form>"""
+# ─────────────────────────────────────────────
+#  EMAIL + OTP HELPERS
+# ─────────────────────────────────────────────
+def send_email(to_addr: str, subject: str, html_body: str) -> bool:
+    """Send an HTML email. Returns True on success."""
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"]    = FROM_EMAIL
+        msg["To"]      = to_addr
+        msg.attach(MIMEText(html_body, "html"))
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.sendmail(SMTP_USER, to_addr, msg.as_string())
+        return True
+    except Exception as e:
+        app.logger.error(f"Email send error: {e}")
+        return False
+
+def generate_otp(email: str) -> str:
+    """Create a 6-digit OTP valid for 10 minutes and store it."""
+    code = f"{secrets.randbelow(1000000):06d}"
+    OTP_STORE[email] = {"code": code, "expires": datetime.utcnow() + timedelta(minutes=10)}
+    return code
+
+def verify_otp(email: str, code: str) -> bool:
+    """Return True if OTP matches and has not expired, then remove it."""
+    entry = OTP_STORE.get(email)
+    if not entry:
+        return False
+    if datetime.utcnow() > entry["expires"]:
+        OTP_STORE.pop(email, None)
+        return False
+    if entry["code"] != code.strip():
+        return False
+    OTP_STORE.pop(email, None)
+    return True
+
+def email_format_valid(email: str) -> bool:
+    """Basic RFC-5322-ish format check."""
+    return bool(re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email))
+
+# ─────────────────────────────────────────────
+#  EMAIL EXISTENCE CHECK 
+# ─────────────────────────────────────────────
 
 @app.route("/")
 def index():
     if "user_id" in session: return redirect(url_for("dashboard"))
     return redirect(url_for("login"))
-
 @app.route("/login", methods=["GET","POST"])
 def login():
     if request.method == "POST":
         email = request.form.get("email","").strip().lower()
         password = request.form.get("password","")
-
         try:
             conn = get_db()
             user = conn.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
             conn.close()
-
             if user and check_password_hash(user["password"], password):
                 session.update({
                     "user_id":user["id"],
@@ -1083,56 +1079,21 @@ def login():
                     "email":user["email"]
                 })
                 return redirect(url_for("dashboard"))
-
             flash("Invalid email or password.", "danger")
-
         except Exception as e:
             flash(f"Login error: {str(e)}", "danger")
-
     flashes = flash_html()
-
-    login_form = """
-    <form method="POST" autocomplete="off">
-        
-        <div class="form-group">
-            <label>Email Address</label>
-            <input type="email" name="email" placeholder="you@example.com"
-                required autocomplete="off">
-        </div>
-
-        <div class="form-group">
-            <label>Password</label>
-            <div class="pw-wrap">
-                <input type="password" name="password"
-                    placeholder="••••••••"
-                    required autocomplete="new-password">
-                <button type="button" class="pw-toggle" style="font-family:'JetBrains Mono',monospace;font-size:0.55rem;letter-spacing:0.1em;color:var(--text);">SHOW</button>
-            </div>
-        </div>
-
-        <button type="submit" class="btn btn-primary" style="width:100%;">
-            Login →
-        </button>
-
-    </form>
-
-    <div class="auth-links">
-        Don't have an account? Click SIGN UP above!
-    </div>
-    """
-
     return (AUTH_PAGE_TEMPLATE
         .replace("__TITLE__", "Login")
         .replace("__CSS__", BASE_CSS)
         .replace("__FLASHES__", flash_html())
-        .replace("__LOGIN_FORM__", login_form)
+        .replace("__LOGIN_FORM__", _login_form())
         .replace("__REGISTER_FORM__", _register_form())
         .replace("__LOGIN_ACTIVE__", "auth-tab-active")
         .replace("__REGISTER_ACTIVE__", "")
         .replace("__LOGIN_DISPLAY__", "block")
         .replace("__REGISTER_DISPLAY__", "none")
         .replace("__AUTH_JS__", AUTH_JS))
-
 @app.route("/register", methods=["GET","POST"])
 def register():
     if request.method == "POST":
@@ -1143,104 +1104,313 @@ def register():
         department = request.form.get("department","").strip()
 
         if not all([name,email,password]):
-            flash("All fields are required.","danger")
-
-        elif role not in ("teacher","student"):
-            flash("Invalid role.","danger")
-
+            flash("All fields are required.", "danger")
+        elif not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
+            flash("Please enter a valid email address.", "danger")
+        elif role not in ("teacher", "student"):
+            flash("Invalid role.", "danger")
         elif len(password) < 6:
-            flash("Password must be at least 6 characters.","danger")
-
+            flash("Password must be at least 6 characters.", "danger")
         else:
-            try:
-                conn = get_db()
-                conn.execute("""
-                    INSERT INTO users(name,email,password,role,department)
-                    VALUES(?,?,?,?,?)
-                """,(name,email,generate_password_hash(password),role,department))
-                conn.commit()
-                conn.close()
-
-                flash("Account created. Please log in.","success")
-                return redirect(url_for("login"))
-
-            except sqlite3.IntegrityError:
-                flash("Email already registered.","danger")
-
-            except Exception as e:
-                flash(f"Error: {str(e)}","danger")
-
-    flashes = flash_html()
-
-    form = """
-    <form method="POST" autocomplete="off">
-
-        <div class="form-group">
-            <label>Full Name</label>
-            <input type="text" name="name"
-                placeholder="Jane Smith"
-                required autocomplete="off">
-        </div>
-
-        <div class="form-group">
-            <label>Email</label>
-            <input type="email" name="email"
-                placeholder="you@example.com"
-                required autocomplete="off">
-        </div>
-
-        <div class="form-group">
-            <label>Password</label>
-            <div class="pw-wrap">
-                <input type="password" name="password"
-                    placeholder="Min. 6 characters"
-                    required autocomplete="new-password">
-                <button type="button" class="pw-toggle" style="font-family:'JetBrains Mono',monospace;font-size:0.55rem;letter-spacing:0.1em;color:var(--text);">SHOW</button>
-            </div>
-        </div>
-
-        <div class="form-group">
-            <label>Role</label>
-            <select name="role">
-                <option value="student">Student</option>
-                <option value="teacher">Teacher</option>
-            </select>
-        </div>
-
-        <div class="form-group">
-            <label>Department (optional)</label>
-            <input type="text" name="department"
-                placeholder="e.g. Science..."
-                autocomplete="off">
-        </div>
-
-        <button type="submit" class="btn btn-primary" style="width:100%;">
-            Create Account →
-        </button>
-
-    </form>
-
-    <div class="auth-links">
-        Already have an account? Go to LOGIN!
-    </div>
-    """
+            conn = get_db()
+            existing = conn.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()
+            conn.close()
+            if existing:
+                flash("Email already registered.", "danger")
+            else:
+                code = generate_otp(email)
+                ok = send_email(email, "TPES — Verify Your Email", f"""
+                <div style="font-family:sans-serif;max-width:480px;margin:auto">
+                  <h2 style="color:#8b0000;">TPES Email Verification</h2>
+                  <p>Your verification code is:</p>
+                  <div style="font-size:2.5rem;font-weight:bold;letter-spacing:0.3em;
+                              background:#f4f4f4;padding:16px 24px;border-radius:8px;
+                              display:inline-block;color:#333;">{code}</div>
+                  <p style="color:#666;font-size:0.88rem;margin-top:12px;">
+                    Expires in <strong>10 minutes</strong>.
+                  </p>
+                </div>""")
+                if ok:
+                    session["pending_reg"] = {
+                        "name": name, "email": email,
+                        "password": generate_password_hash(password),
+                        "role": role, "department": department
+                    }
+                    flash("A 6-digit verification code was sent to your email.", "success")
+                    return redirect(url_for("register_verify"))
+                else:
+                    OTP_STORE.pop(email, None)
+                    flash("Could not send verification email. Please use a real, existing email address.", "danger")
 
     return (AUTH_PAGE_TEMPLATE
         .replace("__TITLE__", "Register")
         .replace("__CSS__", BASE_CSS)
         .replace("__FLASHES__", flash_html())
-        .replace("__LOGIN_FORM__", login_form)
+        .replace("__LOGIN_FORM__", _login_form())
         .replace("__REGISTER_FORM__", _register_form())
         .replace("__LOGIN_ACTIVE__", "")
         .replace("__REGISTER_ACTIVE__", "auth-tab-active")
         .replace("__LOGIN_DISPLAY__", "none")
         .replace("__REGISTER_DISPLAY__", "block")
         .replace("__AUTH_JS__", AUTH_JS))
+@app.route("/register-verify", methods=["GET","POST"])
+def register_verify():
+    pending = session.get("pending_reg")
+    if not pending:
+        flash("Session expired. Please register again.", "danger")
+        return redirect(url_for("register"))
+
+    if request.method == "POST":
+        code = request.form.get("code","").strip()
+        if verify_otp(pending["email"], code):
+            try:
+                conn = get_db()
+                conn.execute("""
+                    INSERT INTO users(name,email,password,role,department)
+                    VALUES(?,?,?,?,?)
+                """, (pending["name"], pending["email"], pending["password"],
+                      pending["role"], pending["department"]))
+                conn.commit()
+                conn.close()
+                session.pop("pending_reg", None)
+                flash("Account created successfully! Please log in.", "success")
+                return redirect(url_for("login"))
+            except sqlite3.IntegrityError:
+                flash("Email already registered.", "danger")
+                return redirect(url_for("register"))
+            except Exception as e:
+                flash(f"Error: {str(e)}", "danger")
+        else:
+            flash("Invalid or expired code. Please try again.", "danger")
+
+    email = pending["email"]
+    page_html = f"""
+    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);">
+      <div style="max-width:420px;width:100%;padding:2.5rem;background:var(--surface);
+                  border:1px solid var(--border);border-radius:var(--radius-xl);
+                  box-shadow:var(--shadow-lg);">
+        <h2 style="font-family:'Playfair Display',serif;margin-bottom:0.3rem;color:var(--text);">Verify Your Email</h2>
+        <p style="color:var(--muted);font-size:0.88rem;margin-bottom:1.5rem;font-style:italic;">
+          A 6-digit code was sent to <strong style="color:var(--rose);">{email}</strong>.
+          Enter it below to complete registration.
+        </p>
+        {flash_html()}
+        <form method="POST" autocomplete="off">
+          <div class="form-group">
+            <label>Verification Code</label>
+            <input type="text" name="code" placeholder="••••••"
+                   maxlength="6" required autocomplete="one-time-code"
+                   style="letter-spacing:0.35em;font-size:1.4rem;text-align:center;">
+          </div>
+          <button type="submit" class="btn btn-primary" style="width:100%;">
+            Verify & Create Account →
+          </button>
+        </form>
+        <div style="text-align:center;margin-top:1rem;font-size:0.88rem;color:var(--muted);">
+          Wrong email? <a href="/register">Go back</a>
+        </div>
+      </div>
+    </div>"""
+    return render_template_string(
+        f"<!DOCTYPE html><html><head><title>Verify Email</title>{BASE_CSS_TAG}</head><body>{page_html}</body></html>"
+    )
+@app.route("/forgot-password", methods=["GET","POST"])
+def forgot_password():
+    """Step 1 — user enters their email; system sends OTP."""
+    if request.method == "POST":
+        email = request.form.get("email","").strip().lower()
+        if not email_format_valid(email):
+            flash("Please enter a valid email address.","danger")
+        else:
+            conn = get_db()
+            user = conn.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()
+            conn.close()
+            if user:
+                code = generate_otp(email)
+                html = f"""
+                <div style="font-family:sans-serif;max-width:480px;margin:auto">
+                  <h2 style="color:#8b0000;">TPES Password Reset</h2>
+                  <p>Your one-time verification code is:</p>
+                  <div style="font-size:2.5rem;font-weight:bold;letter-spacing:0.3em;
+                              background:#f4f4f4;padding:16px 24px;border-radius:8px;
+                              display:inline-block;color:#333;">{code}</div>
+                  <p style="color:#666;font-size:0.88rem;margin-top:12px;">
+                    This code expires in <strong>10 minutes</strong>.
+                    If you did not request a password reset, ignore this email.
+                  </p>
+                </div>"""
+                ok = send_email(email, "TPES — Password Reset Code", html)
+                if ok:
+                    flash("A 6-digit code has been sent to your email.","success")
+                else:
+                    # Dev/demo fallback: show code in flash if SMTP not configured
+                    flash(f"(Dev mode) Your reset code is: {code}","info")
+            else:
+                # Don't reveal whether the email exists
+                flash("If that email is registered, a reset code was sent.","info")
+            return redirect(url_for("forgot_verify", email=email))
+    page_html = f"""
+    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);">
+      <div class="auth-card" style="max-width:420px;width:100%;padding:2.5rem;">
+        <h2 style="margin-bottom:0.3rem;font-size:1.45rem;">Forgot Password</h2>
+        <p style="color:var(--text-muted);font-size:0.88rem;margin-bottom:1.5rem;">
+          Enter your registered email and we'll send you a reset code.
+        </p>
+        {flash_html()}
+        <form method="POST" autocomplete="off">
+          <div class="form-group">
+            <label>Email Address</label>
+            <input type="email" name="email" placeholder="you@example.com" required autocomplete="off">
+          </div>
+          <button type="submit" class="btn btn-primary" style="width:100%;">Send Reset Code →</button>
+        </form>
+        <div class="auth-links" style="margin-top:1rem;">
+          <a href="/login">← Back to Login</a>
+        </div>
+      </div>
+    </div>"""
+    return render_template_string(
+        f"<!DOCTYPE html><html><head><title>Forgot Password</title>{BASE_CSS_TAG}</head><body>{page_html}</body></html>"
+    )
+
+@app.route("/forgot-verify", methods=["GET","POST"])
+def forgot_verify():
+    """Step 2 — user enters the 6-digit OTP."""
+    email = request.args.get("email","").strip().lower() or request.form.get("email","").strip().lower()
+    if not email:
+        return redirect(url_for("forgot_password"))
+    if request.method == "POST":
+        code = request.form.get("code","").strip()
+        if verify_otp(email, code):
+            # OTP valid — store in session so reset page is accessible
+            session["pw_reset_email"] = email
+            return redirect(url_for("forgot_reset"))
+        else:
+            flash("Invalid or expired code. Please try again.","danger")
+    page_html = f"""
+    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);">
+      <div class="auth-card" style="max-width:420px;width:100%;padding:2.5rem;">
+        <h2 style="margin-bottom:0.3rem;font-size:1.45rem;">Enter Verification Code</h2>
+        <p style="color:var(--text-muted);font-size:0.88rem;margin-bottom:1.5rem;">
+          A 6-digit code was sent to <strong>{email}</strong>. It expires in 10 minutes.
+        </p>
+        {flash_html()}
+        <form method="POST" autocomplete="off">
+          <input type="hidden" name="email" value="{email}">
+          <div class="form-group">
+            <label>6-Digit Code</label>
+            <input type="text" name="code" placeholder="••••••"
+                   maxlength="6" required autocomplete="one-time-code"
+                   style="letter-spacing:0.35em;font-size:1.4rem;text-align:center;">
+          </div>
+          <button type="submit" class="btn btn-primary" style="width:100%;">Verify Code →</button>
+        </form>
+        <div class="auth-links" style="margin-top:1rem;">
+          <a href="/forgot-password">Resend code</a> &nbsp;·&nbsp; <a href="/login">← Back to Login</a>
+        </div>
+      </div>
+    </div>"""
+    return render_template_string(
+        f"<!DOCTYPE html><html><head><title>Verify Code</title>{BASE_CSS_TAG}</head><body>{page_html}</body></html>"
+    )
+
+@app.route("/forgot-reset", methods=["GET","POST"])
+def forgot_reset():
+    """Step 3 — set a new password (requires valid OTP session token)."""
+    email = session.get("pw_reset_email")
+    if not email:
+        flash("Session expired. Please start over.","danger")
+        return redirect(url_for("forgot_password"))
+    if request.method == "POST":
+        pw  = request.form.get("password","")
+        pw2 = request.form.get("password2","")
+        if len(pw) < 6:
+            flash("Password must be at least 6 characters.","danger")
+        elif pw != pw2:
+            flash("Passwords do not match.","danger")
+        else:
+            try:
+                conn = get_db()
+                conn.execute("UPDATE users SET password=? WHERE email=?",
+                             (generate_password_hash(pw), email))
+                conn.commit()
+                conn.close()
+                session.pop("pw_reset_email", None)
+                flash("Password updated successfully. Please log in.","success")
+                return redirect(url_for("login"))
+            except Exception as e:
+                flash(f"Error updating password: {e}","danger")
+    page_html = f"""
+    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);">
+      <div class="auth-card" style="max-width:420px;width:100%;padding:2.5rem;">
+        <h2 style="margin-bottom:0.3rem;font-size:1.45rem;">Set New Password</h2>
+        <p style="color:var(--text-muted);font-size:0.88rem;margin-bottom:1.5rem;">
+          Creating a new password for <strong>{email}</strong>.
+        </p>
+        {flash_html()}
+        <form method="POST" autocomplete="off">
+          <div class="form-group">
+            <label>New Password</label>
+            <div class="pw-wrap">
+              <input type="password" name="password" id="pw1"
+                     placeholder="Min. 6 characters" required autocomplete="new-password">
+              <button type="button" class="pw-toggle" onclick="var i=document.getElementById('pw1');i.type=i.type==='password'?'text':'password';"
+                      style="font-family:'JetBrains Mono',monospace;font-size:0.55rem;letter-spacing:0.1em;color:var(--text);">SHOW</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Confirm Password</label>
+            <div class="pw-wrap">
+              <input type="password" name="password2" id="pw2"
+                     placeholder="Repeat password" required autocomplete="new-password">
+              <button type="button" class="pw-toggle" onclick="var i=document.getElementById('pw2');i.type=i.type==='password'?'text':'password';"
+                      style="font-family:'JetBrains Mono',monospace;font-size:0.55rem;letter-spacing:0.1em;color:var(--text);">SHOW</button>
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary" style="width:100%;">Update Password →</button>
+        </form>
+      </div>
+    </div>"""
+    return render_template_string(
+        f"<!DOCTYPE html><html><head><title>Reset Password</title>{BASE_CSS_TAG}</head><body>{page_html}</body></html>"
+    )
 
 @app.route("/logout")
 def logout():
-    session.clear(); flash("You have been logged out.","info"); return redirect(url_for("login"))
+    session.clear()
+    flash("You have been logged out.","info")
+    return redirect(url_for("login"))
 
+@app.route("/logout-confirm")
+@login_required
+def logout_confirm():
+    page_html = f"""
+    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);">
+      <div style="max-width:400px;width:100%;padding:2.5rem;background:var(--surface);
+                  border:1px solid var(--border);border-radius:var(--radius-xl);
+                  box-shadow:var(--shadow-lg);text-align:center;">
+        <div style="width:64px;height:64px;border-radius:50%;background:rgba(220,20,60,0.12);
+                    border:1px solid rgba(220,20,60,0.3);display:flex;align-items:center;
+                    justify-content:center;margin:0 auto 20px;font-size:1.8rem;">⎋</div>
+        <h2 style="font-family:'Playfair Display',serif;color:var(--text);margin-bottom:8px;">
+          Confirm Logout
+        </h2>
+        <p style="color:var(--muted);font-size:0.92rem;margin-bottom:28px;font-style:italic;">
+          Are you sure you want to log out of your account?
+        </p>
+        <div style="display:flex;gap:12px;justify-content:center;">
+          <a href="/logout" class="btn btn-danger" style="padding:10px 28px;">
+            Yes, Logout
+          </a>
+          <a href="/dashboard" class="btn btn-secondary" style="padding:10px 28px;">
+            Cancel
+          </a>
+        </div>
+      </div>
+    </div>"""
+    return render_template_string(
+        f"<!DOCTYPE html><html><head><title>Logout</title>{BASE_CSS_TAG}</head><body>{page_html}</body></html>"
+    )
 @app.route("/dashboard")
 @login_required
 def dashboard():
@@ -1248,7 +1418,6 @@ def dashboard():
     if role=="admin": return redirect(url_for("admin_dashboard"))
     if role=="teacher": return redirect(url_for("teacher_dashboard"))
     return redirect(url_for("student_dashboard"))
-
 # ════════════════════════════════════════════════════════════════
 #  ADMIN ROUTES
 # ════════════════════════════════════════════════════════════════
@@ -1290,7 +1459,6 @@ def admin_dashboard():
       </table></div>
     </div>"""
     return page("Dashboard",content,"admin",session["name"],"dashboard")
-
 @app.route("/admin/users")
 @login_required
 @role_required("admin")
@@ -1314,7 +1482,6 @@ def admin_users():
       <tbody>{'<tr><td colspan="7"><div class="empty"><div class="empty-icon">◌</div><div class="empty-msg">No users found</div></div></td></tr>' if not users else rows}</tbody>
     </table></div>"""
     return page("Users",content,"admin",session["name"],"users")
-
 @app.route("/admin/users/delete/<int:uid>", methods=["POST"])
 @login_required
 @role_required("admin")
@@ -1324,7 +1491,6 @@ def admin_delete_user(uid):
         flash("User deleted.","success")
     except Exception as e: flash(f"Error: {str(e)}","danger")
     return redirect(url_for("admin_users"))
-
 @app.route("/admin/evaluations")
 @login_required
 @role_required("admin")
@@ -1339,7 +1505,6 @@ def admin_evaluations():
         ORDER BY u_t.name, e.created_at DESC
     """).fetchall()
     conn.close()
-
     # Group evaluations by teacher
     from collections import OrderedDict
     teachers = OrderedDict()
@@ -1350,14 +1515,11 @@ def admin_evaluations():
         teachers[tid]["evals"].append(e)
         teachers[tid]["total"] += 1
         teachers[tid]["score_sum"] += e["score"]
-
     summary_rows = ""
     detail_sections = ""
-
     for tid, data in teachers.items():
         avg = round(data["score_sum"] / data["total"], 1)
         stars_avg = "★" * round(avg) + "☆" * (5 - round(avg))
-
         # One summary row per teacher
         summary_rows += f"""
         <tr id="summary-{tid}">
@@ -1388,7 +1550,6 @@ def admin_evaluations():
                   </tr>
                 </thead>
                 <tbody>"""
-
         for e in data["evals"]:
             detail_sections += f"""
                   <tr style="border-bottom:1px solid rgba(61,26,29,0.3)">
@@ -1403,14 +1564,12 @@ def admin_evaluations():
                       </form>
                     </td>
                   </tr>"""
-
         detail_sections += """
                 </tbody>
               </table>
             </div>
           </td>
         </tr>"""
-
     content = f"""
     <div class="page-header">
       <div class="page-title">All <span class="page-title-accent">Evaluations</span></div>
@@ -1429,7 +1588,6 @@ def admin_evaluations():
         {'<tr><td colspan="4"><div class="empty"><div class="empty-icon">◌</div><div class="empty-msg">No evaluations yet</div></div></td></tr>' if not teachers else summary_rows + detail_sections}
       </tbody>
     </table></div>
-
     <script>
     function toggleDetails(tid) {{
       const row = document.getElementById('details-' + tid);
@@ -1439,9 +1597,7 @@ def admin_evaluations():
       btn.innerHTML = isOpen ? '▾ &nbsp;View All' : '▴ &nbsp;Collapse';
     }}
     </script>"""
-
     return page("Evaluations", content, "admin", session["name"], "evaluations")
-
 @app.route("/admin/evaluations/delete/<int:eid>", methods=["POST"])
 @login_required
 @role_required("admin")
@@ -1454,7 +1610,6 @@ def admin_delete_eval(eid):
         flash("Evaluation deleted.","success")
     except Exception as e: flash(f"Error: {str(e)}","danger")
     return redirect(url_for("admin_evaluations"))
-
 @app.route("/admin/questions", methods=["GET","POST"])
 @login_required
 @role_required("admin")
@@ -1501,7 +1656,6 @@ def admin_questions():
       </div>
     </div>"""
     return page("Questions",content,"admin",session["name"],"questions")
-
 @app.route("/admin/results")
 @login_required
 @role_required("admin")
@@ -1511,10 +1665,8 @@ def admin_results():
         JOIN users u ON ts.teacher_id=u.id ORDER BY ts.average_score DESC""").fetchall()
     results = [dict(r) for r in raw]
     conn.close()
-
     def badge_class(pred):
         return {"Excellent":"excellent","Good":"good","Average":"average","Needs Improvement":"needs","Poor":"poor"}.get(pred,"average")
-
     rows="".join(f"""<tr>
         <td><b>{r['name']}</b></td><td class="text-muted">{r.get('department') or '—'}</td>
         <td><div class="score-bar-wrap">
@@ -1535,7 +1687,6 @@ def admin_results():
       <tbody>{'<tr><td colspan="7"><div class="empty"><div class="empty-icon">◌</div><div class="empty-msg">No ML results yet.</div></div></td></tr>' if not results else rows}</tbody>
     </table></div>"""
     return page("ML Results",content,"admin",session["name"],"results")
-
 # ════════════════════════════════════════════════════════════════
 #  TEACHER ROUTES
 # ════════════════════════════════════════════════════════════════
@@ -1550,17 +1701,14 @@ def teacher_dashboard():
     ts_raw=conn.execute("SELECT * FROM teacher_suggestion WHERE teacher_id=?",(tid,)).fetchone()
     ts = dict(ts_raw) if ts_raw else None
     conn.close()
-
     prediction=ts["prediction"] if ts else "—"
     suggestion=ts["suggestion_text"] if ts else "No evaluations received yet."
     avg_stored=ts["average_score"] if ts else 0
     confidence=ts.get("confidence", 0) if ts else 0
     ml_method=ts.get("ml_method", "") if ts else ""
     text_proba=json.loads(ts["text_proba"]) if ts and ts.get("text_proba") else {}
-
     def badge_class(pred):
         return {"Excellent":"excellent","Good":"good","Average":"average","Needs Improvement":"needs","Poor":"poor"}.get(pred,"average")
-
     LABELS=["Excellent","Good","Average","Needs Improvement","Poor"]
     COLORS={"Excellent":"#22c55e","Good":"#f59e0b","Average":"#f97316","Needs Improvement":"#dc2626","Poor":"#7f1d1d"}
     proba_bars=""
@@ -1573,7 +1721,6 @@ def teacher_dashboard():
               <div class="proba-bar-wrap"><div class="proba-bar-fill" data-width="{pct}" style="background:{COLORS[lbl]};width:0%"></div></div>
               <div class="proba-pct">{pct}%</div>
             </div>"""
-
     no_comment_badge = (
         '<span style="display:inline-flex;align-items:center;gap:6px;'
         'background:rgba(245,158,11,0.10);border:1px solid rgba(245,158,11,0.28);'
@@ -1581,13 +1728,11 @@ def teacher_dashboard():
         'font-size:0.58rem;color:#f59e0b;text-transform:uppercase;letter-spacing:0.12em;'
         'margin-left:8px;">&#9888; No Comment Submitted Yet</span>'
     ) if not text_proba else ""
-
     confidence_warning = (
         '<div style="font-family:\'JetBrains Mono\',monospace;font-size:0.58rem;'
         'color:#f59e0b;text-align:center;margin-top:6px;letter-spacing:0.08em;">'
         '&#9888; Score-only</div>'
     ) if not text_proba else ""
-
     no_proba_box = (
         '<div style="display:flex;align-items:flex-start;gap:10px;padding:12px 14px;'
         'background:rgba(245,158,11,0.07);border:1px solid rgba(245,158,11,0.20);'
@@ -1598,7 +1743,6 @@ def teacher_dashboard():
         '<span style="color:var(--muted);">Comments enable NLP sentiment analysis.</span>'
         '</span></div>'
     )
-
     ml_section = ""
     if ts:
         ml_section = f"""
@@ -1616,7 +1760,6 @@ def teacher_dashboard():
             </div>
           </div>
         </div>"""
-
     result_card=f"""
     <div class="result-card">
       <div class="flex-between" style="margin-bottom:18px">
@@ -1632,7 +1775,6 @@ def teacher_dashboard():
       <p style="font-size:0.95rem;color:var(--text-dim);line-height:1.7;font-family:'Crimson Pro',serif;font-style:italic">{suggestion}</p>
       {ml_section}
     </div>"""
-
     content=f"""
     <div class="page-header">
       <div class="page-title">Welcome, <span class="page-title-accent">{session['name'].split()[0]}</span></div>
@@ -1649,7 +1791,6 @@ def teacher_dashboard():
       <a href="/teacher/results" class="btn btn-secondary">Detailed Results</a>
     </div>"""
     return page("Dashboard",content,"teacher",session["name"],"dashboard")
-
 @app.route("/teacher/evaluations")
 @login_required
 @role_required("teacher")
@@ -1674,7 +1815,6 @@ def teacher_evaluations():
       <tbody>{'<tr><td colspan="5"><div class="empty"><div class="empty-icon">◌</div><div class="empty-msg">No evaluations received yet</div></div></td></tr>' if not evals else rows}</tbody>
     </table></div>"""
     return page("My Evaluations",content,"teacher",session["name"],"evaluations")
-
 @app.route("/teacher/results")
 @login_required
 @role_required("teacher")
@@ -1686,10 +1826,8 @@ def teacher_results():
         FROM evaluation e JOIN question q ON e.question_id=q.id
         WHERE e.teacher_id=? GROUP BY e.question_id ORDER BY avg_s DESC""",(tid,)).fetchall()
     conn.close()
-
     def badge_class(pred):
         return {"Excellent":"excellent","Good":"good","Average":"average","Needs Improvement":"needs","Poor":"poor"}.get(pred,"average")
-
     if not ts:
         content=f"""
         <div class="page-header"><div class="page-title">My <span class="page-title-accent">Results</span></div></div>
@@ -1699,7 +1837,6 @@ def teacher_results():
         confidence=ts.get("confidence", 0)
         ml_method=ts.get("ml_method", "score_only")
         text_proba=json.loads(ts["text_proba"]) if ts.get("text_proba") else {}
-
         LABELS=["Excellent","Good","Average","Needs Improvement","Poor"]
         COLORS={"Excellent":"#22c55e","Good":"#f59e0b","Average":"#f97316","Needs Improvement":"#dc2626","Poor":"#7f1d1d"}
         proba_bars="".join(f"""
@@ -1708,7 +1845,6 @@ def teacher_results():
             <div class="proba-bar-wrap"><div class="proba-bar-fill" data-width="{text_proba.get(lbl,0)}" style="background:{COLORS[lbl]};width:0%"></div></div>
             <div class="proba-pct">{text_proba.get(lbl,0)}%</div>
           </div>""" for lbl in LABELS) if text_proba else ""
-
         q_bars="".join(f"""
           <div style="margin-bottom:18px">
             <div class="flex-between" style="margin-bottom:7px">
@@ -1718,7 +1854,6 @@ def teacher_results():
             <div class="score-bar" style="height:7px"><div class="score-fill" data-width="{round(q['avg_s']/5*100,1)}"></div></div>
             <div style="font-family:'JetBrains Mono',monospace;font-size:0.6rem;color:var(--muted);margin-top:5px">{q['cnt']} response{'s' if q['cnt']!=1 else ''}</div>
           </div>""" for q in by_q)
-
         no_comment_pill = (
             '<span style="display:inline-flex;align-items:center;gap:5px;'
             'background:rgba(245,158,11,0.10);border:1px solid rgba(245,158,11,0.28);'
@@ -1727,7 +1862,6 @@ def teacher_results():
             'position:relative;z-index:1;margin-top:8px;align-self:flex-start;">'
             '&#9888; No Comment Submitted Yet</span>'
         ) if not text_proba else ""
-
         no_proba_box_results = (
             '<div style="display:flex;align-items:flex-start;gap:12px;padding:16px 18px;'
             'background:rgba(245,158,11,0.07);border:1px solid rgba(245,158,11,0.22);'
@@ -1740,7 +1874,6 @@ def teacher_results():
             'Probability analysis requires at least one comment. '
             'Encourage students to add comments when evaluating.</div></div></div>'
         ) if not text_proba else ""
-
         nlp_title_badge = (
             ' <span style="display:inline-flex;align-items:center;gap:5px;'
             'background:rgba(245,158,11,0.10);border:1px solid rgba(245,158,11,0.28);'
@@ -1748,7 +1881,6 @@ def teacher_results():
             'font-size:0.58rem;color:#f59e0b;letter-spacing:0.1em;vertical-align:middle;">'
             '&#9888; No Comment Submitted Yet</span>'
         ) if not text_proba else ""
-
         content=f"""
         <div class="page-header">
           <div class="page-title">My <span class="page-title-accent">Results</span></div>
@@ -1767,12 +1899,10 @@ def teacher_results():
             <div class="ml-method-tag" style="align-self:flex-start">{ml_method.replace('_',' ')}</div>
           </div>
         </div>
-
         <div class="card" style="margin-bottom:20px">
           <div class="section-title" style="margin-bottom:18px">Performance by Question</div>
           {q_bars or '<p class="text-muted">No question data.</p>'}
         </div>
-
         <div class="card" style="margin-bottom:20px">
          <div class="section-title">Feedback Analysis</div>
 <p style="font-size:0.82rem;color:var(--muted);margin-bottom:16px;font-style:italic">
@@ -1780,14 +1910,12 @@ def teacher_results():
 </p>
           {proba_bars if proba_bars else no_proba_box_results}
         </div>
-
         <div class="result-card">
           <div class="section-title" style="margin-bottom:12px">AI Recommendation</div>
           <p style="font-size:0.95rem;color:var(--text-dim);line-height:1.8;font-family:'Crimson Pro',serif;font-style:italic">{ts.get('suggestion_text','')}</p>
           <div style="font-family:'JetBrains Mono',monospace;font-size:0.62rem;color:var(--muted);margin-top:14px">Last updated: {(ts.get('created_at') or '')[:16]}</div>
         </div>"""
     return page("My Results",content,"teacher",session["name"],"results")
-
 # ════════════════════════════════════════════════════════════════
 #  STUDENT ROUTES
 # ════════════════════════════════════════════════════════════════
@@ -1816,7 +1944,6 @@ def student_dashboard():
       <a href="/student/evaluate" class="btn btn-primary">＋ &nbsp;Start Evaluation</a>
     </div>"""
     return page("Dashboard",content,"student",session["name"],"dashboard")
-
 @app.route("/student/evaluate", methods=["GET","POST"])
 @login_required
 @role_required("student")
@@ -1850,7 +1977,6 @@ def student_evaluate():
                 return page("Submitted!",success,"student",session["name"],"evaluate")
             except Exception as e:
                 conn.close(); flash(f"Error: {str(e)}","danger")
-
     teachers=conn.execute("SELECT id,name,department FROM users WHERE role='teacher' ORDER BY name").fetchall()
     questions=conn.execute("SELECT * FROM question ORDER BY id").fetchall()
     conn.close()
@@ -1913,7 +2039,6 @@ def student_evaluate():
     }});
     </script>"""
     return page("Evaluate",content+js_extra,"student",session["name"],"evaluate")
-
 @app.route("/student/history")
 @login_required
 @role_required("student")
@@ -1930,7 +2055,6 @@ def student_history():
         ORDER BY u.name, e.created_at DESC
     """, (sid,)).fetchall()
     conn.close()
-
     from collections import OrderedDict
     teachers = OrderedDict()
     for s in submissions:
@@ -1940,15 +2064,12 @@ def student_history():
         teachers[tid]["evals"].append(s)
         teachers[tid]["total"] += 1
         teachers[tid]["score_sum"] += s["score"]
-
     summary_rows = ""
     detail_sections = ""
-
     for tid, data in teachers.items():
         avg = round(data["score_sum"] / data["total"], 1)
         stars_avg = "★" * round(avg) + "☆" * (5 - round(avg))
         latest_date = data["evals"][0]["created_at"][:10]
-
         summary_rows += f"""
         <tr id="summary-{tid}">
           <td style="font-family:'JetBrains Mono',monospace;font-size:0.75rem;color:var(--muted)">◈</td>
@@ -1979,7 +2100,6 @@ def student_history():
                   </tr>
                 </thead>
                 <tbody>"""
-
         for e in data["evals"]:
             detail_sections += f"""
                   <tr style="border-bottom:1px solid rgba(61,26,29,0.3)">
@@ -1989,14 +2109,12 @@ def student_history():
                     <td style="padding:10px 12px;color:var(--text-dim);font-size:0.88rem">{e['comment'] or '—'}</td>
                     <td style="padding:10px 12px;font-family:'JetBrains Mono',monospace;font-size:0.72rem;color:var(--muted)">{e['created_at'][:10]}</td>
                   </tr>"""
-
         detail_sections += """
                 </tbody>
               </table>
             </div>
           </td>
         </tr>"""
-
     content = f"""
     <div class="page-header">
       <div class="page-title">My <span class="page-title-accent">Submissions</span></div>
@@ -2017,7 +2135,6 @@ def student_history():
         {'<tr><td colspan="6"><div class="empty"><div class="empty-icon">◌</div><div class="empty-msg">No submissions yet. <a href="/student/evaluate" style="color:var(--rose)">Start evaluating →</a></div></div></td></tr>' if not teachers else summary_rows + detail_sections}
       </tbody>
     </table></div>
-
     <script>
     function toggleDetails(tid) {{
       const row = document.getElementById('details-' + tid);
@@ -2027,9 +2144,7 @@ def student_history():
       btn.innerHTML = isOpen ? '▾ &nbsp;View All' : '▴ &nbsp;Collapse';
     }}
     </script>"""
-
     return page("My Submissions", content, "student", session["name"], "history")
-
 # ════════════════════════════════════════════════════════════════
 #  ERROR HANDLERS
 # ════════════════════════════════════════════════════════════════
@@ -2039,7 +2154,6 @@ def not_found(e):
     <div style="display:flex;align-items:center;justify-content:center;min-height:100vh;flex-direction:column;gap:16px;text-align:center">
       <h1 style="font-family:'Playfair Display',serif;color:var(--crimson)">404 — Not Found</h1>
       <a href="/" class="btn btn-primary">Go Home</a></div></body></html>""",404
-
 @app.errorhandler(500)
 def server_error(e):
     return f"""<!DOCTYPE html><html><head><style>{BASE_CSS}</style></head><body>
@@ -2047,7 +2161,6 @@ def server_error(e):
       <h1 style="font-family:'Playfair Display',serif">500 — Server Error</h1>
       <p style="color:var(--muted)">{str(e)}</p>
       <a href="/" class="btn btn-primary">Go Home</a></div></body></html>""",500
-
 # ════════════════════════════════════════════════════════════════
 #  RUN
 # ════════════════════════════════════════════════════════════════
@@ -2065,6 +2178,5 @@ if __name__ == "__main__":
 #║   URL:     http://127.0.0.1:5000                     ║
 #╚══════════════════════════════════════════════════════╝
 #    """)
-
 port = int(os.environ.get("PORT", 5000))
 app.run(host="0.0.0.0", port=port)
