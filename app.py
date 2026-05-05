@@ -834,8 +834,25 @@ def _register_form():
           <div style="font-family:'JetBrains Mono',monospace;font-size:0.58rem;color:var(--muted);margin-top:5px;letter-spacing:0.05em;">Hold Ctrl / ⌘ to select multiple</div>
         </div>
       </div>
+
+      <!-- Teacher-only fields -->
+      <div id="teacherBlockSection" class="form-group" style="display:none">
+        <label>Blocks I Handle <span style="color:var(--muted);font-size:0.6rem;">(hold Ctrl/⌘ for multiple)</span></label>
+        <select name="teacher_blocks" id="teacherBlockSelect" multiple style="min-height:110px;font-size:0.88rem;">
+          {block_opts}
+        </select>
+      </div>
+      <div id="teacherSemSection" class="form-group" style="display:none">
+        <label>Semester</label>
+        <select name="teacher_semester">
+          <option value="">— Select semester —</option>
+          {sem_opts}
+        </select>
+      </div>
+
       <button type="submit" class="btn btn-primary" style="width:100%;padding:12px;font-size:1rem;margin-top:4px;">Create Account &nbsp;→</button>
     </form>
+
     <script>
     fetch('/api/teachers').then(r=>r.json()).then(teachers=>{{
       window._allTeachers = teachers;
@@ -855,9 +872,12 @@ def _register_form():
 
     function onRoleChange(sel) {{
       const isStudent = sel.value === 'student';
-      document.getElementById('teacherSection').style.display = isStudent ? 'block' : 'none';
-      document.getElementById('blockSection').style.display   = isStudent ? 'block' : 'none';
-      document.getElementById('semSection').style.display     = isStudent ? 'block' : 'none';
+      const isTeacher = sel.value === 'teacher';
+      document.getElementById('teacherSection').style.display      = isStudent ? 'block' : 'none';
+      document.getElementById('blockSection').style.display         = isStudent ? 'block' : 'none';
+      document.getElementById('semSection').style.display           = isStudent ? 'block' : 'none';
+      document.getElementById('teacherBlockSection').style.display  = isTeacher ? 'block' : 'none';
+      document.getElementById('teacherSemSection').style.display    = isTeacher ? 'block' : 'none';
     }}
 
     document.getElementById('deptSelect').addEventListener('change', function() {{
@@ -1073,18 +1093,78 @@ def register():
         else:
             try:
                 conn = get_db()
-                conn.execute("INSERT INTO users(name,email,password,role,department,block,semester) VALUES(?,?,?,?,?,?,?)",
-                             (name, email, generate_password_hash(password), role, department, block, semester))
+
+                # For teachers: use first selected block for the users table (or empty),
+                # actual multi-block stored via student_teacher links later
+                teacher_blocks   = request.form.getlist("teacher_blocks")   # list of blocks
+                teacher_semester = request.form.get("teacher_semester", "").strip()
+
+                # For the users table, store first block + semester (for profile display)
+                if role == "teacher":
+                    primary_block    = teacher_blocks[0] if teacher_blocks else ""
+                    primary_semester = teacher_semester
+                else:
+                    primary_block    = block
+                    primary_semester = semester
+
+                conn.execute(
+                    "INSERT INTO users(name,email,password,role,department,block,semester) VALUES(?,?,?,?,?,?,?)",
+                    (name, email, generate_password_hash(password), role, department, primary_block, primary_semester)
+                )
                 user_id = conn.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()["id"]
 
-                # Link student to selected teachers
                 if role == "student" and teacher_ids:
+                    # Manually selected teachers
                     for tid in teacher_ids:
                         try:
-                            conn.execute("INSERT OR IGNORE INTO student_teacher(student_id,teacher_id,block,semester) VALUES(?,?,?,?)",
-                                         (user_id, int(tid), block, semester))
+                            conn.execute(
+                                "INSERT OR IGNORE INTO student_teacher(student_id,teacher_id,block,semester) VALUES(?,?,?,?)",
+                                (user_id, int(tid), block, semester)
+                            )
                         except Exception:
                             pass
+
+                if role == "student" and block and semester:
+                    # Auto-link: find teachers whose handled blocks+semester match this student
+                    matching_teachers = conn.execute("""
+                        SELECT DISTINCT st.teacher_id FROM student_teacher st
+                        JOIN users u ON st.teacher_id = u.id
+                        WHERE st.block = ? AND st.semester = ? AND u.department = ? AND u.role = 'teacher'
+                    """, (block, semester, department)).fetchall()
+                    for mt in matching_teachers:
+                        try:
+                            conn.execute(
+                                "INSERT OR IGNORE INTO student_teacher(student_id,teacher_id,block,semester) VALUES(?,?,?,?)",
+                                (user_id, mt["teacher_id"], block, semester)
+                            )
+                        except Exception:
+                            pass
+
+                if role == "teacher" and teacher_blocks and teacher_semester:
+                    # Store each block the teacher handles as a sentinel row
+                    # (student_id=0 means "teacher handles this block")
+                    for tb in teacher_blocks:
+                        try:
+                            conn.execute(
+                                "INSERT OR IGNORE INTO student_teacher(student_id,teacher_id,block,semester) VALUES(?,?,?,?)",
+                                (0, user_id, tb, teacher_semester)
+                            )
+                        except Exception:
+                            pass
+                    # Auto-link existing students that match teacher's blocks+semester+dept
+                    for tb in teacher_blocks:
+                        matching_students = conn.execute("""
+                            SELECT u.id FROM users u
+                            WHERE u.role='student' AND u.block=? AND u.semester=? AND u.department=?
+                        """, (tb, teacher_semester, department)).fetchall()
+                        for ms in matching_students:
+                            try:
+                                conn.execute(
+                                    "INSERT OR IGNORE INTO student_teacher(student_id,teacher_id,block,semester) VALUES(?,?,?,?)",
+                                    (ms["id"], user_id, tb, teacher_semester)
+                                )
+                            except Exception:
+                                pass
 
                 conn.commit(); conn.close()
                 flash("Account created. Please log in.", "success")
@@ -1556,7 +1636,7 @@ def teacher_students():
                (SELECT AVG(e.score) FROM evaluation e WHERE e.student_id=u.id AND e.teacher_id=?) as avg_score
         FROM student_teacher st
         JOIN users u ON st.student_id = u.id
-        WHERE st.teacher_id=?
+        WHERE st.teacher_id=? AND st.student_id != 0
         ORDER BY st.semester DESC, st.block, u.name
     """, (tid, tid, tid)).fetchall()
     conn.close()
@@ -1764,7 +1844,7 @@ def student_evaluate():
 
     my_teacher_ids = set(
         r["teacher_id"] for r in conn.execute(
-            "SELECT teacher_id FROM student_teacher WHERE student_id=?", (sid,)
+            "SELECT teacher_id FROM student_teacher WHERE student_id=? AND student_id != 0", (sid,)
         ).fetchall()
     )
     all_teachers   = conn.execute("SELECT id,name,department FROM users WHERE role='teacher' ORDER BY name").fetchall()
