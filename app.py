@@ -1112,35 +1112,20 @@ def register():
         elif len(password) < 6:
             flash("Password must be at least 6 characters.", "danger")
         else:
-            conn = get_db()
-            existing = conn.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()
-            conn.close()
-            if existing:
+            try:
+                conn = get_db()
+                conn.execute("""
+                    INSERT INTO users(name,email,password,role,department)
+                    VALUES(?,?,?,?,?)
+                """, (name, email, generate_password_hash(password), role, department))
+                conn.commit()
+                conn.close()
+                flash("Account created. Please log in.", "success")
+                return redirect(url_for("login"))
+            except sqlite3.IntegrityError:
                 flash("Email already registered.", "danger")
-            else:
-                code = generate_otp(email)
-                ok = send_email(email, "TPES — Verify Your Email", f"""
-                <div style="font-family:sans-serif;max-width:480px;margin:auto">
-                  <h2 style="color:#8b0000;">TPES Email Verification</h2>
-                  <p>Your verification code is:</p>
-                  <div style="font-size:2.5rem;font-weight:bold;letter-spacing:0.3em;
-                              background:#f4f4f4;padding:16px 24px;border-radius:8px;
-                              display:inline-block;color:#333;">{code}</div>
-                  <p style="color:#666;font-size:0.88rem;margin-top:12px;">
-                    Expires in <strong>10 minutes</strong>.
-                  </p>
-                </div>""")
-                if ok:
-                    session["pending_reg"] = {
-                        "name": name, "email": email,
-                        "password": generate_password_hash(password),
-                        "role": role, "department": department
-                    }
-                    flash("A 6-digit verification code was sent to your email.", "success")
-                    return redirect(url_for("register_verify"))
-                else:
-                    OTP_STORE.pop(email, None)
-                    flash("Could not send verification email. Please use a real, existing email address.", "danger")
+            except Exception as e:
+                flash(f"Error: {str(e)}", "danger")
 
     return (AUTH_PAGE_TEMPLATE
         .replace("__TITLE__", "Register")
@@ -1153,67 +1138,7 @@ def register():
         .replace("__LOGIN_DISPLAY__", "none")
         .replace("__REGISTER_DISPLAY__", "block")
         .replace("__AUTH_JS__", AUTH_JS))
-@app.route("/register-verify", methods=["GET","POST"])
-def register_verify():
-    pending = session.get("pending_reg")
-    if not pending:
-        flash("Session expired. Please register again.", "danger")
-        return redirect(url_for("register"))
 
-    if request.method == "POST":
-        code = request.form.get("code","").strip()
-        if verify_otp(pending["email"], code):
-            try:
-                conn = get_db()
-                conn.execute("""
-                    INSERT INTO users(name,email,password,role,department)
-                    VALUES(?,?,?,?,?)
-                """, (pending["name"], pending["email"], pending["password"],
-                      pending["role"], pending["department"]))
-                conn.commit()
-                conn.close()
-                session.pop("pending_reg", None)
-                flash("Account created successfully! Please log in.", "success")
-                return redirect(url_for("login"))
-            except sqlite3.IntegrityError:
-                flash("Email already registered.", "danger")
-                return redirect(url_for("register"))
-            except Exception as e:
-                flash(f"Error: {str(e)}", "danger")
-        else:
-            flash("Invalid or expired code. Please try again.", "danger")
-
-    email = pending["email"]
-    page_html = f"""
-    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);">
-      <div style="max-width:420px;width:100%;padding:2.5rem;background:var(--surface);
-                  border:1px solid var(--border);border-radius:var(--radius-xl);
-                  box-shadow:var(--shadow-lg);">
-        <h2 style="font-family:'Playfair Display',serif;margin-bottom:0.3rem;color:var(--text);">Verify Your Email</h2>
-        <p style="color:var(--muted);font-size:0.88rem;margin-bottom:1.5rem;font-style:italic;">
-          A 6-digit code was sent to <strong style="color:var(--rose);">{email}</strong>.
-          Enter it below to complete registration.
-        </p>
-        {flash_html()}
-        <form method="POST" autocomplete="off">
-          <div class="form-group">
-            <label>Verification Code</label>
-            <input type="text" name="code" placeholder="••••••"
-                   maxlength="6" required autocomplete="one-time-code"
-                   style="letter-spacing:0.35em;font-size:1.4rem;text-align:center;">
-          </div>
-          <button type="submit" class="btn btn-primary" style="width:100%;">
-            Verify & Create Account →
-          </button>
-        </form>
-        <div style="text-align:center;margin-top:1rem;font-size:0.88rem;color:var(--muted);">
-          Wrong email? <a href="/register">Go back</a>
-        </div>
-      </div>
-    </div>"""
-    return render_template_string(
-        f"<!DOCTYPE html><html><head><title>Verify Email</title>{BASE_CSS_TAG}</head><body>{page_html}</body></html>"
-    )
 @app.route("/forgot-password", methods=["GET","POST"])
 def forgot_password():
     """Step 1 — user enters their email; system sends OTP."""
