@@ -1806,10 +1806,16 @@ def student_evaluate():
             flash("Please rate all questions.", "danger")
         else:
             # ── ONE EVALUATION PER STUDENT PER TEACHER ──
-            already = conn.execute(
-                "SELECT COUNT(*) FROM evaluation WHERE student_id=? AND teacher_id=?",
-                (sid, int(teacher_id))
+            student_semester = conn.execute(
+    "SELECT semester FROM users WHERE id=?", (sid,)
+).fetchone()["semester"] or ""
+            already = conn.execute("""
+                SELECT COUNT(*) FROM evaluation e
+    JOIN student_teacher st ON st.teacher_id = e.teacher_id AND st.student_id = e.student_id
+    WHERE e.student_id=? AND e.teacher_id=? AND st.semester=?
+""", (sid, int(teacher_id), student_semester)
             ).fetchone()[0]
+
             if already > 0:
                 conn.close()
                 flash("⚠ You have already submitted an evaluation for this teacher. Each teacher can only be evaluated once.", "warning")
@@ -1836,12 +1842,17 @@ def student_evaluate():
 
     # ── GET: build form ──
     # Teachers already evaluated by this student
+    student_semester = conn.execute(
+    "SELECT semester FROM users WHERE id=?", (sid,)
+).fetchone()["semester"] or ""
+    
     evaluated_teacher_ids = set(
-        r["teacher_id"] for r in conn.execute(
-            "SELECT DISTINCT teacher_id FROM evaluation WHERE student_id=?", (sid,)
-        ).fetchall()
-    )
-
+       r["teacher_id"] for r in conn.execute("""
+        SELECT DISTINCT e.teacher_id FROM evaluation e
+        JOIN student_teacher st ON st.teacher_id = e.teacher_id AND st.student_id = e.student_id
+        WHERE e.student_id=? AND st.semester=?
+    """, (sid, student_semester)).fetchall()
+)
     my_teacher_ids = set(
         r["teacher_id"] for r in conn.execute(
             "SELECT teacher_id FROM student_teacher WHERE student_id=? AND student_id != 0", (sid,)
@@ -1953,10 +1964,16 @@ def student_evaluate():
 def student_history():
     sid = session["user_id"]; conn = get_db()
     submissions = conn.execute("""
-        SELECT e.id, u.name as teacher_name, u.id as teacher_id,
-               q.question_text, e.score, e.comment, e.created_at
-        FROM evaluation e JOIN users u ON e.teacher_id=u.id JOIN question q ON e.question_id=q.id
-        WHERE e.student_id=? ORDER BY u.name, e.created_at DESC""", (sid,)).fetchall()
+    SELECT e.id, u.name as teacher_name, u.id as teacher_id,
+           q.question_text, e.score, e.comment, e.created_at,
+           COALESCE(st.semester, '') as semester
+    FROM evaluation e
+    JOIN users u ON e.teacher_id=u.id
+    JOIN question q ON e.question_id=q.id
+    LEFT JOIN student_teacher st ON st.teacher_id=e.teacher_id AND st.student_id=e.student_id
+    WHERE e.student_id=? ORDER BY st.semester DESC, u.name, e.created_at DESC
+""", (sid,)).fetchall()
+    
     conn.close()
     from collections import OrderedDict
     teachers = OrderedDict()
@@ -1972,6 +1989,7 @@ def student_history():
         avg = round(data["score_sum"]/data["total"], 1)
         stars_avg = "★"*round(avg) + "☆"*(5-round(avg))
         latest_date = data["evals"][0]["created_at"][:10]
+        semester_tag = data["evals"][0]["semester"]
         summary_rows += f"""
         <tr id="summary-{tid}">
           <td style="font-family:'JetBrains Mono',monospace;font-size:0.75rem;color:var(--muted)">◈</td>
@@ -1979,6 +1997,7 @@ def student_history():
           <td style="color:var(--gold)">{stars_avg} <span class="text-muted">({avg}/5)</span></td>
           <td style="font-family:'JetBrains Mono',monospace;font-size:0.78rem;color:var(--muted)">{data['total']} eval{'s' if data['total']!=1 else ''}</td>
           <td class="text-muted" style="font-family:'JetBrains Mono',monospace;font-size:0.75rem">{latest_date}</td>
+          <td><span class="badge badge-block" style="font-size:0.58rem">{semester_tag or '—'}</span></td>
           <td><button class="btn btn-secondary btn-sm" onclick="toggleDetails({tid})">▾ &nbsp;View All</button></td>
         </tr>
         <tr id="details-{tid}" style="display:none"><td colspan="6" style="padding:0">
@@ -2002,8 +2021,8 @@ def student_history():
     content = f"""
     <div class="page-header"><div class="page-title">My <span class="page-title-accent">Submissions</span></div><div class="page-subtitle">One row per teacher — click View All to expand</div></div>
     <div class="table-wrap"><table>
-      <thead><tr><th></th><th>Teacher</th><th>Avg Score</th><th>Count</th><th>Latest</th><th>Action</th></tr></thead>
-      <tbody>{'<tr><td colspan="6"><div class="empty"><div class="empty-icon">◌</div><div class="empty-msg">No submissions yet. <a href="/student/evaluate" style="color:var(--rose)">Start evaluating →</a></div></div></td></tr>' if not teachers else summary_rows + detail_sections}</tbody>
+      <thead><tr><th></th><th>Teacher</th><th>Avg Score</th><th>Count</th><th>Latest</th><th>Semester</th><th>Action</th></tr></thead>
+      <tbody>{'<tr><td colspan="7"><div class="empty"><div class="empty-icon">◌</div><div class="empty-msg">No submissions yet. <a href="/student/evaluate" style="color:var(--rose)">Start evaluating →</a></div></div></td></tr>' if not teachers else summary_rows + detail_sections}</tbody>
     </table></div>
     <script>function toggleDetails(tid){{const row=document.getElementById('details-'+tid);const btn=document.querySelector('#summary-'+tid+' button');const isOpen=row.style.display!=='none';row.style.display=isOpen?'none':'table-row';btn.innerHTML=isOpen?'▾ &nbsp;View All':'▴ &nbsp;Collapse';}}</script>"""
     return page("My Submissions", content, "student", session["name"], "history")
