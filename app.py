@@ -1122,7 +1122,7 @@ def verify_otp(email, code):
     OTP_STORE.pop(email, None); return True
 
 def email_format_valid(email):
-    return bool(re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email))
+    return bool(re.match(r'^[a-zA-Z0-9._%+\-]{2,}@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$', email))
 
 def is_strong_password(password):
     if len(password) < 6:
@@ -1221,16 +1221,14 @@ def register():
 
         if not all([name, email, password]):
             flash("All fields are required.", "danger")
-        elif not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
-            flash("Please enter a valid email address.", "danger")
+        elif not re.match(r'^[a-zA-Z0-9._%+\-]{2,}@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$', email):
+            flash("Please enter a valid email address. (e.g. name@gmail.com)", "danger")
         elif not department:
             flash("Please select your department.", "danger")
         elif role not in ("teacher", "student"):
             flash("Invalid role.", "danger")
-        else:
-             valid, pw_msg = is_strong_password(password)
-        if not valid:
-             flash(pw_msg, "danger")
+        elif not is_strong_password(password)[0]:
+            flash(is_strong_password(password)[1], "danger")
         elif password != confirm_password:
             flash("Passwords do not match. Please try again.", "danger")
         elif role == "student" and not block:
@@ -1379,9 +1377,10 @@ def forgot_reset():
     if not email: flash("Session expired.","danger"); return redirect(url_for("forgot_password"))
     if request.method == "POST":
         pw = request.form.get("password",""); pw2 = request.form.get("password2","")
-        if len(pw) < 6: flash("Password must be at least 6 characters.","danger")
-        elif pw != pw2: flash("Passwords do not match.","danger")
-        else:
+        valid, pw_msg = is_strong_password(pw)
+    if not valid: flash(pw_msg, "danger")
+    elif pw != pw2: flash("Passwords do not match.","danger")
+    else:
             conn = get_db(); conn.execute("UPDATE users SET password=? WHERE email=?", (generate_password_hash(pw), email)); conn.commit(); conn.close()
             session.pop("pw_reset_email", None); flash("Password updated. Please log in.","success"); return redirect(url_for("login"))
     page_html = f"""<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);"><div class="auth-card" style="max-width:420px;width:100%;padding:2.5rem;"><h2>Set New Password</h2>{flash_html()}<form method="POST" autocomplete="off"><div class="form-group"><label>New Password</label><div class="pw-wrap"><input type="password" name="password" id="pw1" placeholder="Min. 6 characters" required><button type="button" class="pw-toggle" onclick="var i=document.getElementById('pw1');i.type=i.type==='password'?'text':'password';" style="font-family:'JetBrains Mono',monospace;font-size:0.55rem;">SHOW</button></div></div><div class="form-group"><label>Confirm Password</label><div class="pw-wrap"><input type="password" name="password2" id="pw2" placeholder="Repeat password" required><button type="button" class="pw-toggle" onclick="var i=document.getElementById('pw2');i.type=i.type==='password'?'text':'password';" style="font-family:'JetBrains Mono',monospace;font-size:0.55rem;">SHOW</button></div></div><button type="submit" class="btn btn-primary" style="width:100%;">Update Password →</button></form></div></div>"""
