@@ -2157,7 +2157,7 @@ def student_evaluate():
       <form method="POST" id="evalForm">
         <div class="form-group"><label>Select Teacher</label>
           <select name="teacher_id" required id="teacherSelect">
-            <option value="">— Choose a teacher —</option>{teacher_opts}
+            <option value="">— YOUR ASSIGNED TEACHER —</option>{teacher_opts}
           </select>
         </div>
         <hr class="separator">
