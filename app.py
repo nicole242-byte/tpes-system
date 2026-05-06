@@ -256,6 +256,7 @@ def init_db():
     for tbl, col, defn in [
         ("users", "block", "TEXT DEFAULT ''"),
         ("users", "semester", "TEXT DEFAULT ''"),
+        ("users", "status", "TEXT DEFAULT 'Regular'"),
     ]:
         try:
             c.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {defn}")
@@ -810,6 +811,13 @@ def _register_form():
         </select>
       </div>
       <!-- Student-only fields -->
+      <div id="statusSection" class="form-group">
+        <label>Student Status</label>
+        <select name="status" id="statusSelect" onchange="onStatusChange(this)">
+          <option value="Regular">Regular</option>
+          <option value="Irregular">Irregular</option>
+        </select>
+      </div>
       <div id="blockSection" class="form-group">
         <label>Block / Section</label>
         <select name="block" id="blockSelect">
@@ -873,21 +881,46 @@ def _register_form():
     function onRoleChange(sel) {{
       const isStudent = sel.value === 'student';
       const isTeacher = sel.value === 'teacher';
-      document.getElementById('teacherSection').style.display      = isStudent ? 'block' : 'none';
+      document.getElementById('statusSection').style.display        = isStudent ? 'block' : 'none';
+      document.getElementById('teacherSection').style.display       = isStudent ? 'block' : 'none';
       document.getElementById('blockSection').style.display         = isStudent ? 'block' : 'none';
       document.getElementById('semSection').style.display           = isStudent ? 'block' : 'none';
       document.getElementById('teacherBlockSection').style.display  = isTeacher ? 'block' : 'none';
       document.getElementById('teacherSemSection').style.display    = isTeacher ? 'block' : 'none';
+      // Reset teacher list when switching roles
+      if (isStudent && window._allTeachers) renderTeachers(window._allTeachers);
+    }}
+
+    function onStatusChange(sel) {{
+      const isIrregular = sel.value === 'Irregular';
+      const dept = document.getElementById('deptSelect').value;
+      if (isIrregular) {{
+        // Irregular: show ALL teachers regardless of department
+        if (window._allTeachers) renderTeachers(window._allTeachers);
+      }} else {{
+        // Regular: filter by department
+        if (window._allTeachers && dept) {{
+          renderTeachers(window._allTeachers.filter(t => t.department === dept));
+        }} else if (window._allTeachers) {{
+          renderTeachers(window._allTeachers);
+        }}
+      }}
     }}
 
     document.getElementById('deptSelect').addEventListener('change', function() {{
       const dept = this.value;
       const role = document.getElementById('roleSelect').value;
+      const status = document.getElementById('statusSelect') ? document.getElementById('statusSelect').value : 'Regular';
       if (role === 'student' && window._allTeachers) {{
-        const filtered = dept
-          ? window._allTeachers.filter(t => t.department === dept)
-          : window._allTeachers;
-        renderTeachers(filtered);
+        if (status === 'Irregular') {{
+          // Irregular students see all teachers
+          renderTeachers(window._allTeachers);
+        }} else {{
+          const filtered = dept
+            ? window._allTeachers.filter(t => t.department === dept)
+            : window._allTeachers;
+          renderTeachers(filtered);
+        }}
       }}
     }});
     </script>"""
@@ -1072,6 +1105,7 @@ def register():
         department       = request.form.get("department","").strip()
         block            = request.form.get("block","").strip()
         semester         = request.form.get("semester","").strip()
+        status           = request.form.get("status","Regular").strip()
         teacher_ids      = request.form.getlist("teacher_ids")
 
         if not all([name, email, password]):
@@ -1108,8 +1142,9 @@ def register():
                     primary_semester = semester
 
                 conn.execute(
-                    "INSERT INTO users(name,email,password,role,department,block,semester) VALUES(?,?,?,?,?,?,?)",
-                    (name, email, generate_password_hash(password), role, department, primary_block, primary_semester)
+                    "INSERT INTO users(name,email,password,role,department,block,semester,status) VALUES(?,?,?,?,?,?,?,?)",
+                    (name, email, generate_password_hash(password), role, department, primary_block, primary_semester,
+                     status if role == "student" else "")
                 )
                 user_id = conn.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()["id"]
 
@@ -2041,7 +2076,11 @@ def profile():
     <tr><td style="font-family:'JetBrains Mono',monospace;font-size:0.72rem;color:var(--muted);padding:10px 0">Block / Section</td>
     <td style="padding:10px 0;font-weight:600">{user['block'] or '—'}</td></tr>
     <tr><td style="font-family:'JetBrains Mono',monospace;font-size:0.72rem;color:var(--muted);padding:10px 0">Semester</td>
-    <td style="padding:10px 0">{user['semester'] or '—'}</td></tr>""" if user['role'] == 'student' else ""
+    <td style="padding:10px 0">{user['semester'] or '—'}</td></tr>
+    <tr><td style="font-family:'JetBrains Mono',monospace;font-size:0.72rem;color:var(--muted);padding:10px 0">Status</td>
+    <td style="padding:10px 0">
+    <span class="badge" style="{'background:rgba(201,150,58,0.15);color:var(--gold-lt);border-color:rgba(201,150,58,0.2)' if (user['status'] or 'Regular')=='Regular' else 'background:rgba(251,146,60,0.12);color:#fb923c;border-color:rgba(251,146,60,0.2)'}">{user['status'] or 'Regular'}</span>
+    </td></tr>""" if user['role'] == 'student' else ""
 
     dept_row = f"""
     <tr><td style="font-family:'JetBrains Mono',monospace;font-size:0.72rem;color:var(--muted);padding:10px 0">Department</td>
