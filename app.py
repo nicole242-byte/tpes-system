@@ -734,7 +734,50 @@ document.addEventListener('DOMContentLoaded', function() {
   guardPwForm('loginForm',    'login_pw', 'login_confirm_pw');
   guardPwForm('registerForm', 'reg_pw',   'reg_confirm_pw');
 });
+function checkPasswordStrength(pw) {
+  const checks = {
+    length:     pw.length >= 6,
+    hasLetter:  /[a-zA-Z]/.test(pw),
+    hasNumber:  /[0-9]/.test(pw),
+    noSeqNum:   !/(012|123|234|345|456|567|678|789|890|987|876|765|654|543|432|321|210)/i.test(pw),
+    noSeqAlpha: !/(abc|bcd|cde|def|efg|fgh|ghi|hij|ijk|jkl|klm|lmn|mno|nop|opq|pqr|qrs|rst|stu|tuv|uvw|vwx|wxy|xyz|zyx|yxw|xwv|wvu|vut|uts|tsr|srq|rqp|qpo|pon|onm|nml|mlk|lkj|kji|jih|ihg|hgf|gfe|fed|edc|dcb|cba)/i.test(pw),
+  };
+
+  const messages = {
+    length:     'At least 6 characters',
+    hasLetter:  'Contains a letter',
+    hasNumber:  'Contains a number',
+    noSeqNum:   'No sequential numbers (e.g. 123)',
+    noSeqAlpha: 'No sequential letters (e.g. abc)',
+  };
+
+  let wrap = document.getElementById('pw_strength_wrap');
+  if (!wrap) return;
+
+  let html = '<div style="margin-top:10px;display:flex;flex-direction:column;gap:5px;">';
+  for (const key in checks) {
+    const ok = checks[key];
+    html += `<div style="display:flex;align-items:center;gap:7px;font-family:'JetBrains Mono',monospace;font-size:0.62rem;letter-spacing:0.05em;">
+      <span style="color:${ok ? '#22c55e' : '#dc2626'}">${ok ? '✓' : '✕'}</span>
+      <span style="color:${ok ? '#22c55e' : 'var(--muted)'}">${messages[key]}</span>
+    </div>`;
+  }
+  html += '</div>';
+  wrap.innerHTML = html;
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  const pwInput = document.getElementById('reg_pw');
+  if (pwInput) {
+    // Insert strength indicator after password field
+    const wrap = document.createElement('div');
+    wrap.id = 'pw_strength_wrap';
+    pwInput.closest('.pw-wrap').insertAdjacentElement('afterend', wrap);
+    pwInput.addEventListener('input', () => checkPasswordStrength(pwInput.value));
+  }
+});
 """
+
 
 BASE_CSS_TAG = f"<style>{BASE_CSS}</style>"
 
@@ -1081,6 +1124,35 @@ def verify_otp(email, code):
 def email_format_valid(email):
     return bool(re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email))
 
+def is_strong_password(password):
+    if len(password) < 6:
+        return False, "Password must be at least 6 characters."
+    
+    if not re.search(r'[a-zA-Z]', password):
+        return False, "Password must contain at least one letter."
+    
+    if not re.search(r'[0-9]', password):
+        return False, "Password must contain at least one number."
+    
+    # Bawal pasunod nga numbers (123, 234, 345...)
+    for i in range(len(password) - 2):
+        a, b, c = password[i], password[i+1], password[i+2]
+        if a.isdigit() and b.isdigit() and c.isdigit():
+            if ord(b) == ord(a)+1 and ord(c) == ord(b)+1:
+                return False, "Password must not contain sequential numbers (e.g. 123, 456)."
+            if ord(b) == ord(a)-1 and ord(c) == ord(b)-1:
+                return False, "Password must not contain sequential numbers (e.g. 987, 654)."
+    
+    # Bawal pasunod nga letters (abc, def, qwerty...)
+    for i in range(len(password) - 2):
+        a, b, c = password[i].lower(), password[i+1].lower(), password[i+2].lower()
+        if a.isalpha() and b.isalpha() and c.isalpha():
+            if ord(b) == ord(a)+1 and ord(c) == ord(b)+1:
+                return False, "Password must not contain sequential letters (e.g. abc, xyz)."
+            if ord(b) == ord(a)-1 and ord(c) == ord(b)-1:
+                return False, "Password must not contain sequential letters (e.g. zyx, cba)."
+    
+    return True, ""
 # ─────────────────────────────────────────────
 #  API: teacher list for registration
 # ─────────────────────────────────────────────
@@ -1155,8 +1227,10 @@ def register():
             flash("Please select your department.", "danger")
         elif role not in ("teacher", "student"):
             flash("Invalid role.", "danger")
-        elif len(password) < 6:
-            flash("Password must be at least 6 characters.", "danger")
+        else:
+             valid, pw_msg = is_strong_password(password)
+        if not valid:
+             flash(pw_msg, "danger")
         elif password != confirm_password:
             flash("Passwords do not match. Please try again.", "danger")
         elif role == "student" and not block:
