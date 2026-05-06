@@ -1139,6 +1139,42 @@ def verify_otp(email, code):
 def email_format_valid(email):
     return bool(re.match(r'^[a-zA-Z0-9._%+\-]{2,}@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$', email))
 
+def email_matches_name(name: str, email: str) -> bool:
+    """Check kung ang email nag-contain sa first or last name (case-insensitive)."""
+    local = email.split('@')[0].lower().replace('.','').replace('_','').replace('-','')
+    parts = name.strip().lower().split()
+    if not parts: return False
+    firstname = re.sub(r'[^a-z]', '', parts[0])
+    lastname  = re.sub(r'[^a-z]', '', parts[-1]) if len(parts) > 1 else ''
+    return firstname in local or (lastname and lastname in local)
+
+def email_local_valid(email: str) -> tuple:
+    """Validate ang local part (before @) — returns (ok, error_message)."""
+    local = email.split('@')[0] if '@' in email else email
+
+    # Bawal numbers lang
+    if re.match(r'^[0-9]+$', local):
+        return False, "Email must not be numbers only (e.g. 123456@gmail.com)."
+
+    # Minimum 6 characters before @
+    if len(local) < 7:
+        return False, "Email must have at least 8 characters before @."
+
+    # Must contain at least one letter
+    if not re.search(r'[a-zA-Z]', local):
+        return False, "Email must contain at least one letter."
+
+    # Bawal dili readable — bawal 3+ consecutive numbers
+    if re.search(r'[0-9]{4,}', local):
+        return False, "Email appears unreadable (too many consecutive numbers)."
+
+    # Bawal random-looking — no vowels at all in the letters part (e.g. xkzqwrtp)
+    letters_only = re.sub(r'[^a-zA-Z]', '', local)
+    if len(letters_only) >= 5 and not re.search(r'[aeiouAEIOU]', letters_only):
+        return False, "Email appears unreadable. Please use a real email address."
+
+    return True, ""
+
 def is_strong_password(password):
     if len(password) < 6:
         return False, "Password must be at least 6 characters."
@@ -1236,8 +1272,12 @@ def register():
 
         if not all([name, email, password]):
             flash("All fields are required.", "danger")
-        elif not re.match(r'^[a-zA-Z0-9._%+\-]{2,}@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$', email):
-            flash("Please enter a valid email address. (e.g. name@gmail.com)", "danger")
+        elif not re.match(r'^[a-zA-Z0-9._%+\-]{6,}@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$', email):
+            flash("Please enter a valid email address. (e.g. yourname@gmail.com)", "danger")
+        elif not email_local_valid(email)[0]:
+            flash(email_local_valid(email)[1], "danger")
+        elif not email_matches_name(name, email):
+            flash("Email must match your name (first or last name). Please use your real email.", "danger")
         elif not department:
             flash("Please select your department.", "danger")
         elif role not in ("teacher", "student"):
