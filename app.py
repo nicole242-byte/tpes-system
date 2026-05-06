@@ -819,7 +819,7 @@ def _register_form():
     return f"""
     <form method="POST" action="/register" autocomplete="off" id="registerForm">
       <div class="form-group">
-        <label>Full Name</label>
+        <label>Full Name[PRINTED]</label>
         <input type="text" name="name" placeholder="Jane Smith" required autocomplete="off">
       </div>
       <div class="form-group">
