@@ -2063,20 +2063,16 @@ def student_evaluate():
         elif not scores or not qids:
             flash("Please rate all questions.", "danger")
         else:
-            # ── ONE EVALUATION PER STUDENT PER TEACHER ──
-            student_semester = conn.execute(
-    "SELECT semester FROM users WHERE id=?", (sid,)
-).fetchone()["semester"] or ""
+            student_semester = conn.execute("SELECT semester FROM users WHERE id=?", (sid,)).fetchone()["semester"] or ""
             already = conn.execute("""
                 SELECT COUNT(*) FROM evaluation e
-    JOIN student_teacher st ON st.teacher_id = e.teacher_id AND st.student_id = e.student_id
-    WHERE e.student_id=? AND e.teacher_id=? AND st.semester=?
-""", (sid, int(teacher_id), student_semester)
-            ).fetchone()[0]
+                JOIN student_teacher st ON st.teacher_id = e.teacher_id AND st.student_id = e.student_id
+                WHERE e.student_id=? AND e.teacher_id=? AND st.semester=?
+            """, (sid, int(teacher_id), student_semester)).fetchone()[0]
 
             if already > 0:
                 conn.close()
-                flash("⚠ You have already submitted an evaluation for this teacher. Each teacher can only be evaluated once.", "warning")
+                flash("⚠ You have already submitted an evaluation for this teacher.", "warning")
                 return redirect(url_for("student_evaluate"))
 
             try:
@@ -2098,117 +2094,158 @@ def student_evaluate():
             except Exception as e:
                 conn.close(); flash(f"Error: {str(e)}", "danger")
 
-    # ── GET: build form ──
-    # Teachers already evaluated by this student
-    student_semester = conn.execute(
-    "SELECT semester FROM users WHERE id=?", (sid,)
-).fetchone()["semester"] or ""
-    
+    # ── GET: build teacher cards ──
+    student_semester = conn.execute("SELECT semester FROM users WHERE id=?", (sid,)).fetchone()["semester"] or ""
     evaluated_teacher_ids = set(
-       r["teacher_id"] for r in conn.execute("""
-        SELECT DISTINCT e.teacher_id FROM evaluation e
-        JOIN student_teacher st ON st.teacher_id = e.teacher_id AND st.student_id = e.student_id
-        WHERE e.student_id=? AND st.semester=?
-    """, (sid, student_semester)).fetchall()
-)
+        r["teacher_id"] for r in conn.execute("""
+            SELECT DISTINCT e.teacher_id FROM evaluation e
+            JOIN student_teacher st ON st.teacher_id = e.teacher_id AND st.student_id = e.student_id
+            WHERE e.student_id=? AND st.semester=?
+        """, (sid, student_semester)).fetchall()
+    )
     my_teacher_ids = set(
         r["teacher_id"] for r in conn.execute(
             "SELECT teacher_id FROM student_teacher WHERE student_id=? AND student_id != 0", (sid,)
         ).fetchall()
     )
-    all_teachers   = conn.execute("SELECT id,name,department FROM users WHERE role='teacher' ORDER BY name").fetchall()
-    questions      = conn.execute("SELECT * FROM question ORDER BY id").fetchall()
+    all_teachers = conn.execute("SELECT id,name,department FROM users WHERE role='teacher' ORDER BY name").fetchall()
+    questions    = conn.execute("SELECT * FROM question ORDER BY id").fetchall()
     conn.close()
 
     my_teachers_list = [t for t in all_teachers if t["id"] in my_teacher_ids]
+    qs_json = [{"id": q["id"], "text": q["question_text"]} for q in questions]
 
-    def teacher_opt(t):
-        already_done = t["id"] in evaluated_teacher_ids
-        disabled = 'disabled' if already_done else ''
-        style = 'style="color:var(--muted);font-style:italic"' if already_done else ''
-        label = f'{t["name"]}{(" — "+t["department"]) if t["department"] else ""}{"  ✓ Already Evaluated" if already_done else ""}'
-        return f'<option value="{t["id"]}" {disabled} {style}>{label}</option>'
-
-    teacher_opts = ""
-    if my_teachers_list:
-        teacher_opts += "".join(teacher_opt(t) for t in my_teachers_list)
-    else:
-        teacher_opts = '<option value="" disabled>No teachers assigned to you yet.</option>'
-
-    # Count how many available teachers left
-    available_count = sum(1 for t in my_teachers_list if t["id"] not in evaluated_teacher_ids)
     done_count      = len(evaluated_teacher_ids)
+    available_count = sum(1 for t in my_teachers_list if t["id"] not in evaluated_teacher_ids)
 
     notice = ""
     if done_count > 0:
         notice = f"""
         <div style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:rgba(245,158,11,0.07);border:1px solid rgba(245,158,11,0.20);border-radius:10px;margin-bottom:20px;font-family:'JetBrains Mono',monospace;font-size:0.72rem;color:var(--amber);">
-          ⚠ &nbsp; You have already evaluated <b>{done_count}</b> teacher{'s' if done_count!=1 else ''}. 
-          Each teacher can only be evaluated <b>once</b>. 
+          ⚠ &nbsp; You have already evaluated <b>{done_count}</b> teacher{'s' if done_count!=1 else ''}.
+          Each teacher can only be evaluated <b>once</b>.
           <span style="color:var(--muted);margin-left:6px">({available_count} remaining)</span>
         </div>"""
 
-    qs_json = [{"id": q["id"], "text": q["question_text"]} for q in questions]
+    # Build teacher cards
+    teacher_cards = ""
+    if not my_teachers_list:
+        teacher_cards = '<div class="empty" style="padding:60px"><div class="empty-icon">◌</div><div class="empty-msg">No teachers assigned to you yet.</div></div>'
+    else:
+        for t in my_teachers_list:
+            done = t["id"] in evaluated_teacher_ids
+            initials = "".join(w[0].upper() for w in t["name"].split()[:2])
+            dept_tag = f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:0.6rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.1em">{t["department"] or "—"}</span>'
+            if done:
+                action_btn = '<span style="display:inline-flex;align-items:center;gap:6px;padding:7px 16px;border-radius:8px;background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.2);color:#4ade80;font-family:\'JetBrains Mono\',monospace;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.1em;">✓ &nbsp;Done</span>'
+                card_style = "opacity:0.6;"
+                form_area  = ""
+            else:
+                action_btn = f'<button class="btn btn-primary btn-sm" onclick="toggleForm({t[\'id\']})" id="btn-{t[\'id\']}">✦ &nbsp;Evaluate</button>'
+                card_style = ""
+                form_area  = f"""
+                <div id="form-{t['id']}" style="display:none;margin-top:18px;padding-top:18px;border-top:1px solid var(--border)">
+                  <form method="POST" id="evalForm-{t['id']}">
+                    <input type="hidden" name="teacher_id" value="{t['id']}">
+                    <div id="questions-{t['id']}"></div>
+                    <div style="margin-top:8px">
+                      <button type="submit" class="btn btn-primary" style="padding:10px 26px">Submit Evaluation &nbsp;→</button>
+                      <button type="button" class="btn btn-secondary btn-sm" onclick="toggleForm({t['id']})" style="margin-left:8px">Cancel</button>
+                    </div>
+                  </form>
+                </div>"""
+
+            teacher_cards += f"""
+            <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px 22px;margin-bottom:14px;transition:var(--transition);{card_style}" id="card-{t['id']}">
+              <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+                <div style="display:flex;align-items:center;gap:14px">
+                  <div style="width:44px;height:44px;border-radius:50%;background:linear-gradient(135deg,var(--crimson-dk),var(--crimson));display:flex;align-items:center;justify-content:center;font-weight:900;font-size:0.9rem;color:#fff;font-family:'Playfair Display',serif;flex-shrink:0;box-shadow:0 0 14px rgba(220,20,60,0.3)">{initials}</div>
+                  <div>
+                    <div style="font-family:'Playfair Display',serif;font-size:1rem;font-weight:700;color:var(--text)">{t['name']}</div>
+                    {dept_tag}
+                  </div>
+                </div>
+                {action_btn}
+              </div>
+              {form_area}
+            </div>"""
+
     content = f"""
-    <div class="page-header"><div class="page-title">Evaluate a <span class="page-title-accent">Teacher</span></div>
-      <div class="page-subtitle">Anonymous & confidential — one evaluation per teacher</div></div>
+    <div class="page-header">
+      <div class="page-title">Evaluate a <span class="page-title-accent">Teacher</span></div>
+      <div class="page-subtitle">Anonymous & confidential — one evaluation per teacher</div>
+    </div>
     {notice}
-    <div class="card" style="max-width:700px">
-      <form method="POST" id="evalForm">
-        <div class="form-group"><label>Select Teacher</label>
-          <select name="teacher_id" required id="teacherSelect">
-            <option value="">— YOUR ASSIGNED TEACHER —</option>{teacher_opts}
-          </select>
-        </div>
-        <hr class="separator">
-        <div id="questionsArea">
-          <div class="empty" style="padding:32px"><div class="empty-icon" style="font-size:1.8rem">◇</div>
-            <div class="empty-msg">Select a teacher above to load evaluation questions</div></div>
-        </div>
-        <div id="submitArea" style="display:none;margin-top:8px">
-          <button type="submit" class="btn btn-primary" style="padding:11px 28px">Submit Evaluation &nbsp;→</button>
-        </div>
-      </form>
+    <div style="max-width:700px">
+      {teacher_cards}
     </div>"""
+
     js_extra = f"""<script>
-    const questions={json.dumps(qs_json)};
-    const select=document.getElementById('teacherSelect');
-    const area=document.getElementById('questionsArea');
-    const submitArea=document.getElementById('submitArea');
-    select.addEventListener('change',()=>{{
-      if(!select.value||select.options[select.selectedIndex].disabled){{
-        area.innerHTML='<div class="empty" style="padding:32px"><div class="empty-icon" style="font-size:1.8rem">◇</div><div class="empty-msg">Select an available teacher above</div></div>';
-        submitArea.style.display='none';return;
-      }}
-      let html='';
-      questions.forEach((q,i)=>{{
-        html+=`<div style="margin-bottom:28px;padding-bottom:24px;border-bottom:1px solid var(--border)">
-          <div style="font-family:'Crimson Pro',serif;font-size:1rem;color:var(--text);margin-bottom:14px;line-height:1.5">
-            <span style="color:var(--crimson);font-family:'JetBrains Mono',monospace;font-size:0.75rem;margin-right:8px">${{String(i+1).padStart(2,'0')}}</span>${{q.text}}</div>
+    const questions = {json.dumps(qs_json)};
+
+    function buildQuestions(tid) {{
+      const container = document.getElementById('questions-' + tid);
+      if (container.dataset.built) return;
+      container.dataset.built = '1';
+      let html = '';
+      questions.forEach((q, i) => {{
+        html += `<div style="margin-bottom:24px;padding-bottom:22px;border-bottom:1px solid var(--border)">
+          <div style="font-family:'Crimson Pro',serif;font-size:0.98rem;color:var(--text);margin-bottom:12px;line-height:1.5">
+            <span style="color:var(--crimson);font-family:'JetBrains Mono',monospace;font-size:0.72rem;margin-right:8px">${{String(i+1).padStart(2,'0')}}</span>${{q.text}}</div>
           <input type="hidden" name="qids[]" value="${{q.id}}">
-          <input type="hidden" name="scores[]" id="score_${{q.id}}" value="0">
-          <div class="stars" data-input="score_${{q.id}}">
+          <input type="hidden" name="scores[]" id="score_${{tid}}_${{q.id}}" value="0">
+          <div class="stars" data-input="score_${{tid}}_${{q.id}}">
             <span class="star">★</span><span class="star">★</span><span class="star">★</span><span class="star">★</span><span class="star">★</span>
           </div>
-          <div style="margin-top:12px"><input type="text" name="comments[]" placeholder="Optional comment (helps ML accuracy)..." style="font-family:'Crimson Pro',serif"></div>
+          <div style="margin-top:10px">
+            <input type="text" name="comments[]" placeholder="Optional comment..." style="font-family:'Crimson Pro',serif">
+          </div>
         </div>`;
       }});
-      area.innerHTML=html;submitArea.style.display='block';
-      area.querySelectorAll('.stars').forEach(starsEl=>{{
-        const inp=document.getElementById(starsEl.dataset.input);
-        const stars=starsEl.querySelectorAll('.star');
-        stars.forEach((s,i)=>{{
-          s.addEventListener('click',()=>{{if(inp)inp.value=i+1;stars.forEach((ss,j)=>ss.classList.toggle('filled',j<=i));}});
-          s.addEventListener('mouseenter',()=>stars.forEach((ss,j)=>ss.classList.toggle('filled',j<=i)));
+      container.innerHTML = html;
+
+      // Re-init star rating
+      container.querySelectorAll('.stars').forEach(starsEl => {{
+        const inp = document.getElementById(starsEl.dataset.input);
+        const stars = starsEl.querySelectorAll('.star');
+        stars.forEach((s, i) => {{
+          s.addEventListener('click', () => {{ if(inp) inp.value = i+1; stars.forEach((ss,j) => ss.classList.toggle('filled', j<=i)); }});
+          s.addEventListener('mouseenter', () => stars.forEach((ss,j) => ss.classList.toggle('filled', j<=i)));
         }});
-        starsEl.addEventListener('mouseleave',()=>{{const v=inp?parseInt(inp.value)||0:0;stars.forEach((ss,j)=>ss.classList.toggle('filled',j<v));}});
+        starsEl.addEventListener('mouseleave', () => {{ const v = inp ? parseInt(inp.value)||0 : 0; stars.forEach((ss,j) => ss.classList.toggle('filled', j<v)); }});
       }});
-    }});
-    document.getElementById('evalForm').addEventListener('submit',e=>{{
-      const scores=document.querySelectorAll('[name="scores[]"]');
-      for(let s of scores){{if(parseInt(s.value)<1){{e.preventDefault();alert('Please rate all questions.');return;}}}}
-    }});
+
+      // Guard submit
+      document.getElementById('evalForm-' + tid).addEventListener('submit', e => {{
+        const scores = document.querySelectorAll('#questions-' + tid + ' [name="scores[]"]');
+        for (let s of scores) {{ if (parseInt(s.value) < 1) {{ e.preventDefault(); alert('Please rate all questions.'); return; }} }}
+      }});
+    }}
+
+    function toggleForm(tid) {{
+      const form = document.getElementById('form-' + tid);
+      const btn  = document.getElementById('btn-' + tid);
+      const card = document.getElementById('card-' + tid);
+      const isOpen = form.style.display !== 'none';
+      if (!isOpen) {{
+        buildQuestions(tid);
+        form.style.display = 'block';
+        card.style.borderColor = 'rgba(220,20,60,0.4)';
+        card.style.boxShadow = '0 0 0 2px rgba(220,20,60,0.12)';
+        btn.innerHTML = '✕ &nbsp;Cancel';
+        btn.classList.remove('btn-primary');
+        btn.classList.add('btn-secondary');
+      }} else {{
+        form.style.display = 'none';
+        card.style.borderColor = '';
+        card.style.boxShadow = '';
+        btn.innerHTML = '✦ &nbsp;Evaluate';
+        btn.classList.remove('btn-secondary');
+        btn.classList.add('btn-primary');
+      }}
+    }}
     </script>"""
+
     return page("Evaluate", content + js_extra, "student", session["name"], "evaluate")
 
 @app.route("/student/history")
