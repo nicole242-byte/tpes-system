@@ -284,6 +284,21 @@ def init_db():
             c.execute(f"ALTER TABLE teacher_suggestion ADD COLUMN {col} {definition}")
         except sqlite3.OperationalError:
             pass
+    #Clean up orphaned evaluations
+    c.execute("""
+        DELETE FROM evaluation 
+        WHERE teacher_id NOT IN (SELECT id FROM users)
+        OR student_id NOT IN (SELECT id FROM users)
+    """)
+    c.execute("""
+        DELETE FROM teacher_suggestion
+        WHERE teacher_id NOT IN (SELECT id FROM users)
+    """)
+    c.execute("""
+        DELETE FROM student_teacher
+        WHERE teacher_id NOT IN (SELECT id FROM users)
+        OR (student_id != 0 AND student_id NOT IN (SELECT id FROM users))
+    """)
 
     conn.commit()
     conn.close()
@@ -1415,9 +1430,12 @@ def admin_dashboard():
     total_users    = conn.execute("SELECT COUNT(*) FROM users WHERE role!='admin'").fetchone()[0]
     total_teachers = conn.execute("SELECT COUNT(*) FROM users WHERE role='teacher'").fetchone()[0]
     total_students = conn.execute("SELECT COUNT(*) FROM users WHERE role='student'").fetchone()[0]
-    total_evals = conn.execute(
-    "SELECT COUNT(DISTINCT student_id || '-' || teacher_id) FROM evaluation"
-).fetchone()[0]
+    total_evals = conn.execute("""
+    SELECT COUNT(DISTINCT e.student_id || '-' || e.teacher_id) 
+    FROM evaluation e
+    JOIN users u_t ON e.teacher_id = u_t.id
+    JOIN users u_s ON e.student_id = u_s.id
+""").fetchone()[0]
     recent = conn.execute("""
     SELECT u_t.id as teacher_id, u_t.name as teacher_name,
            COUNT(DISTINCT e.student_id) as student_count,
@@ -1483,9 +1501,20 @@ def admin_users():
 @role_required("admin")
 def admin_delete_user(uid):
     try:
-        conn = get_db(); conn.execute("DELETE FROM users WHERE id=? AND role!='admin'", (uid,)); conn.commit(); conn.close()
+        conn = get_db()
+        # Delete evaluations where this user is teacher or student
+        conn.execute("DELETE FROM evaluation WHERE teacher_id=? OR student_id=?", (uid, uid))
+        # Delete student_teacher links
+        conn.execute("DELETE FROM student_teacher WHERE teacher_id=? OR student_id=?", (uid, uid))
+        # Delete teacher suggestion if teacher
+        conn.execute("DELETE FROM teacher_suggestion WHERE teacher_id=?", (uid,))
+        # Now delete the user
+        conn.execute("DELETE FROM users WHERE id=? AND role!='admin'", (uid,))
+        conn.commit()
+        conn.close()
         flash("User deleted.", "success")
-    except Exception as e: flash(f"Error: {str(e)}", "danger")
+    except Exception as e:
+        flash(f"Error: {str(e)}", "danger")
     return redirect(url_for("admin_users"))
 
 @app.route("/admin/evaluations")
