@@ -2120,8 +2120,7 @@ def student_evaluate():
     questions      = conn.execute("SELECT * FROM question ORDER BY id").fetchall()
     conn.close()
 
-    my_teachers_list    = [t for t in all_teachers if t["id"] in my_teacher_ids]
-    other_teachers_list = [t for t in all_teachers if t["id"] not in my_teacher_ids]
+    my_teachers_list = [t for t in all_teachers if t["id"] in my_teacher_ids]
 
     def teacher_opt(t):
         already_done = t["id"] in evaluated_teacher_ids
@@ -2132,16 +2131,12 @@ def student_evaluate():
 
     teacher_opts = ""
     if my_teachers_list:
-        teacher_opts += '<optgroup label="— My Assigned Teachers —">'
         teacher_opts += "".join(teacher_opt(t) for t in my_teachers_list)
-        teacher_opts += "</optgroup>"
-    if other_teachers_list:
-        teacher_opts += '<optgroup label="— Other Teachers —">'
-        teacher_opts += "".join(teacher_opt(t) for t in other_teachers_list)
-        teacher_opts += "</optgroup>"
+    else:
+        teacher_opts = '<option value="" disabled>No teachers assigned to you yet.</option>'
 
     # Count how many available teachers left
-    available_count = sum(1 for t in all_teachers if t["id"] not in evaluated_teacher_ids)
+    available_count = sum(1 for t in my_teachers_list if t["id"] not in evaluated_teacher_ids)
     done_count      = len(evaluated_teacher_ids)
 
     notice = ""
