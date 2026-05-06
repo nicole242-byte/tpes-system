@@ -1316,16 +1316,25 @@ def admin_dashboard():
     total_users    = conn.execute("SELECT COUNT(*) FROM users WHERE role!='admin'").fetchone()[0]
     total_teachers = conn.execute("SELECT COUNT(*) FROM users WHERE role='teacher'").fetchone()[0]
     total_students = conn.execute("SELECT COUNT(*) FROM users WHERE role='student'").fetchone()[0]
-    total_evals    = conn.execute("SELECT COUNT(*) FROM evaluation").fetchone()[0]
-    recent = conn.execute("""SELECT e.id,u_t.name as teacher_name,u_s.name as student_name,e.score,e.created_at
-        FROM evaluation e JOIN users u_t ON e.teacher_id=u_t.id JOIN users u_s ON e.student_id=u_s.id
-        ORDER BY e.created_at DESC LIMIT 6""").fetchall()
+    total_evals = conn.execute(
+    "SELECT COUNT(DISTINCT student_id || '-' || teacher_id) FROM evaluation"
+).fetchone()[0]
+    recent = conn.execute("""
+    SELECT u_t.id as teacher_id, u_t.name as teacher_name,
+           COUNT(DISTINCT e.student_id) as student_count,
+           ROUND(AVG(e.score),1) as avg_score,
+           MAX(e.created_at) as created_at
+    FROM evaluation e
+    JOIN users u_t ON e.teacher_id=u_t.id
+    GROUP BY e.teacher_id
+    ORDER BY created_at DESC
+    LIMIT 6""").fetchall()
     conn.close()
     rows = "".join(f"""<tr>
-        <td style="font-family:'JetBrains Mono',monospace;font-size:0.75rem;color:var(--muted)">#{r['id']}</td>
-        <td><b>{r['teacher_name']}</b></td><td class="text-muted">Anonymous</td>
-        <td style="color:var(--gold)">{'★'*r['score']}{'☆'*(5-r['score'])}</td>
-        <td class="text-muted" style="font-family:'JetBrains Mono',monospace;font-size:0.75rem">{r['created_at'][:16]}</td>
+        <td><b>{r['teacher_name']}</b></td>
+        <td style="color:var(--gold)">{'★'*round(r['avg_score'])}{'☆'*(5-round(r['avg_score']))} <span class="text-muted">({r['avg_score']}/5)</span></td>
+        <td class="text-muted">{r['student_count']} student{'s' if r['student_count']!=1 else ''}</td>
+        <td class="text-muted" style="font-family:'JetBrains Mono',monospace;font-size:0.75rem">{r['created_at'][:10]}</td>
         </tr>""" for r in recent)
     content = f"""
     <div class="page-header"><div class="page-title">Admin <span class="page-title-accent">Dashboard</span></div><div class="page-subtitle">System overview and performance metrics</div></div>
@@ -1387,30 +1396,42 @@ def admin_evaluations():
     conn = get_db()
     evals = conn.execute("""
         SELECT e.id, u_t.id as teacher_id, u_t.name as teacher_name,
+               e.student_id,
                q.question_text, e.score, e.comment, e.created_at
         FROM evaluation e
         JOIN users u_t ON e.teacher_id=u_t.id
         JOIN question q ON e.question_id=q.id
         ORDER BY u_t.name, e.created_at DESC""").fetchall()
     conn.close()
+
     from collections import OrderedDict
     teachers = OrderedDict()
     for e in evals:
         tid = e["teacher_id"]
         if tid not in teachers:
-            teachers[tid] = {"name": e["teacher_name"], "evals": [], "total": 0, "score_sum": 0}
+            teachers[tid] = {
+                "name": e["teacher_name"],
+                "evals": [],
+                "score_sum": 0,
+                "student_ids": set()
+            }
         teachers[tid]["evals"].append(e)
-        teachers[tid]["total"] += 1
         teachers[tid]["score_sum"] += e["score"]
-    summary_rows = ""; detail_sections = ""
+        teachers[tid]["student_ids"].add(e["student_id"])
+
+    summary_rows = ""
+    detail_sections = ""
     for tid, data in teachers.items():
-        avg = round(data["score_sum"] / data["total"], 1)
-        stars_avg = "★"*round(avg) + "☆"*(5-round(avg))
+        student_count = len(data["student_ids"])
+        avg = round(data["score_sum"] / len(data["evals"]), 1)
+        stars_avg = "★" * round(avg) + "☆" * (5 - round(avg))
         summary_rows += f"""
         <tr id="summary-{tid}">
           <td><b>{data['name']}</b></td>
           <td style="color:var(--gold)">{stars_avg} <span class="text-muted">({avg}/5)</span></td>
-          <td style="font-family:'JetBrains Mono',monospace;font-size:0.78rem;color:var(--muted)">{data['total']} eval{'s' if data['total']!=1 else ''}</td>
+          <td style="font-family:'JetBrains Mono',monospace;font-size:0.78rem;color:var(--muted)">
+            {student_count} student{'s' if student_count != 1 else ''}
+          </td>
           <td><button class="btn btn-secondary btn-sm" onclick="toggleDetails({tid})">▾ &nbsp;View All</button></td>
         </tr>
         <tr id="details-{tid}" style="display:none"><td colspan="4" style="padding:0">
@@ -1427,20 +1448,37 @@ def admin_evaluations():
         for e in data["evals"]:
             detail_sections += f"""<tr style="border-bottom:1px solid rgba(61,26,29,0.3)">
                 <td style="padding:10px 12px;font-family:'JetBrains Mono',monospace;font-size:0.72rem;color:var(--muted)">#{e['id']}</td>
-                <td style="padding:10px 12px;max-width:220px;font-size:0.88rem">{e['question_text'][:55]}{'...' if len(e['question_text'])>55 else ''}</td>
-                <td style="padding:10px 12px;color:var(--gold)">{'★'*e['score']}{'☆'*(5-e['score'])}</td>
+                <td style="padding:10px 12px;max-width:220px;font-size:0.88rem">{e['question_text'][:55]}{'...' if len(e['question_text']) > 55 else ''}</td>
+                <td style="padding:10px 12px;color:var(--gold)">{'★' * e['score']}{'☆' * (5 - e['score'])}</td>
                 <td style="padding:10px 12px;color:var(--text-dim);font-size:0.88rem">{e['comment'] or '—'}</td>
                 <td style="padding:10px 12px;font-family:'JetBrains Mono',monospace;font-size:0.72rem;color:var(--muted)">{e['created_at'][:10]}</td>
                 <td style="padding:10px 12px"><form method="POST" action="/admin/evaluations/delete/{e['id']}" onsubmit="return confirm('Delete?')"><button class="btn btn-danger btn-sm">✕</button></form></td>
                 </tr>"""
         detail_sections += "</tbody></table></div></td></tr>"
+
     content = f"""
-    <div class="page-header"><div class="page-title">All <span class="page-title-accent">Evaluations</span></div><div class="page-subtitle">One row per teacher — click View All to expand</div></div>
+    <div class="page-header">
+      <div class="page-title">All <span class="page-title-accent">Evaluations</span></div>
+      <div class="page-subtitle">One row per teacher — student count based · click View All to expand</div>
+    </div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Teacher</th><th>Avg Score</th><th>Count</th><th>Action</th></tr></thead>
+      <thead><tr>
+        <th>Teacher</th>
+        <th>Overall Avg Score</th>
+        <th>Students Evaluated</th>
+        <th>Action</th>
+      </tr></thead>
       <tbody>{'<tr><td colspan="4"><div class="empty"><div class="empty-icon">◌</div><div class="empty-msg">No evaluations yet</div></div></td></tr>' if not teachers else summary_rows + detail_sections}</tbody>
     </table></div>
-    <script>function toggleDetails(tid){{const row=document.getElementById('details-'+tid);const btn=document.querySelector('#summary-'+tid+' button');const isOpen=row.style.display!=='none';row.style.display=isOpen?'none':'table-row';btn.innerHTML=isOpen?'▾ &nbsp;View All':'▴ &nbsp;Collapse';}}</script>"""
+    <script>
+    function toggleDetails(tid) {{
+      const row = document.getElementById('details-' + tid);
+      const btn = document.querySelector('#summary-' + tid + ' button');
+      const isOpen = row.style.display !== 'none';
+      row.style.display = isOpen ? 'none' : 'table-row';
+      btn.innerHTML = isOpen ? '▾ &nbsp;View All' : '▴ &nbsp;Collapse';
+    }}
+    </script>"""
     return page("Evaluations", content, "admin", session["name"], "evaluations")
 
 @app.route("/admin/evaluations/delete/<int:eid>", methods=["POST"])
@@ -1810,7 +1848,7 @@ def teacher_students():
 @role_required("student")
 def student_dashboard():
     sid = session["user_id"]; conn = get_db()
-    my_evals       = conn.execute("SELECT COUNT(*) FROM evaluation WHERE student_id=?", (sid,)).fetchone()[0]
+    my_evals = conn.execute("SELECT COUNT(DISTINCT teacher_id) FROM evaluation WHERE student_id=?", (sid,)).fetchone()[0]
     teachers_eval  = conn.execute("SELECT COUNT(DISTINCT teacher_id) FROM evaluation WHERE student_id=?", (sid,)).fetchone()[0]
     my_teachers    = conn.execute("SELECT COUNT(*) FROM student_teacher WHERE student_id=?", (sid,)).fetchone()[0]
     user_info      = conn.execute("SELECT block, semester FROM users WHERE id=?", (sid,)).fetchone()
