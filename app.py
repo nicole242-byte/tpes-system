@@ -1040,12 +1040,31 @@ def send_email(to_addr, subject, html_body):
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject; msg["From"] = FROM_EMAIL; msg["To"] = to_addr
         msg.attach(MIMEText(html_body, "html"))
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            server.ehlo(); server.starttls(); server.login(SMTP_USER, SMTP_PASSWORD)
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(SMTP_USER, SMTP_PASSWORD)
             server.sendmail(SMTP_USER, to_addr, msg.as_string())
-        return True
+        return True, None
+    except smtplib.SMTPAuthenticationError:
+        app.logger.error("Email error: Authentication failed — check SMTP credentials.")
+        return False, "Email authentication failed. Please contact the administrator."
+    except smtplib.SMTPRecipientsRefused:
+        app.logger.error(f"Email error: Recipient refused — {to_addr}")
+        return False, "The email address was rejected. Please check and try again."
+    except smtplib.SMTPConnectError:
+        app.logger.error("Email error: Could not connect to SMTP server.")
+        return False, "Could not connect to the mail server. Please try again later."
+    except smtplib.SMTPServerDisconnected:
+        app.logger.error("Email error: SMTP server disconnected unexpectedly.")
+        return False, "Mail server disconnected. Please try again."
+    except TimeoutError:
+        app.logger.error("Email error: Connection timed out.")
+        return False, "Email request timed out. Please try again later."
     except Exception as e:
-        app.logger.error(f"Email error: {e}"); return False
+        app.logger.error(f"Email error: {e}")
+        return False, "An unexpected error occurred while sending the email."
 
 def generate_otp(email):
     code = f"{secrets.randbelow(1000000):06d}"
@@ -1249,11 +1268,18 @@ def forgot_password():
             if user:
                 code = generate_otp(email)
                 html = f'<div style="font-family:sans-serif;max-width:480px;margin:auto"><h2 style="color:#8b0000;">TPES Password Reset</h2><p>Your one-time verification code is:</p><div style="font-size:2.5rem;font-weight:bold;letter-spacing:0.3em;background:#f4f4f4;padding:16px 24px;border-radius:8px;display:inline-block;color:#333;">{code}</div><p style="color:#666;font-size:0.88rem;margin-top:12px;">This code expires in <strong>10 minutes</strong>.</p></div>'
-                result = {"ok": False}
-                def send_bg(): result["ok"] = send_email(email, "TPES — Password Reset Code", html)
-                t = threading.Thread(target=send_bg); t.start(); t.join(timeout=6)
-                if result["ok"]: flash("A 6-digit code has been sent to your email.", "success")
-                else: flash(f"(Dev mode) Your reset code is: {code}", "info")
+                
+                result = {"ok": False, "err": None}
+                def send_bg():
+                    ok, err = send_email(email, "TPES — Password Reset Code", html)
+                    result["ok"] = ok; result["err"] = err
+                t = threading.Thread(target=send_bg); t.start(); t.join(timeout=10)
+                if result["ok"]:
+                    flash("A 6-digit code has been sent to your email.", "success")
+                else:
+                    err_msg = result["err"] or "Failed to send email."
+                    app.logger.warning(f"OTP for {email}: {code}")
+                    flash(f"{err_msg} (Dev mode) Your reset code is: {code}", "warning")
             else:
                 flash("If that email is registered, a reset code was sent.", "info")
             return redirect(url_for("forgot_verify", email=email))
@@ -1316,12 +1342,9 @@ def admin_dashboard():
     total_users    = conn.execute("SELECT COUNT(*) FROM users WHERE role!='admin'").fetchone()[0]
     total_teachers = conn.execute("SELECT COUNT(*) FROM users WHERE role='teacher'").fetchone()[0]
     total_students = conn.execute("SELECT COUNT(*) FROM users WHERE role='student'").fetchone()[0]
-    total_evals = conn.execute("""
-    SELECT COUNT(DISTINCT e.student_id || '-' || e.teacher_id)
-    FROM evaluation e
-    JOIN users u_t ON e.teacher_id = u_t.id
-    JOIN users u_s ON e.student_id = u_s.id
-""").fetchone()[0]
+    total_evals = conn.execute(
+    "SELECT COUNT(DISTINCT student_id || '-' || teacher_id) FROM evaluation"
+).fetchone()[0]
     recent = conn.execute("""
     SELECT u_t.id as teacher_id, u_t.name as teacher_name,
            COUNT(DISTINCT e.student_id) as student_count,
