@@ -189,9 +189,10 @@ def row_get(row, key, default=None):
 #  DATABASE
 # ─────────────────────────────────────────────
 def get_db():
-    conn = sqlite3.connect(DB)
+    conn = sqlite3.connect(DB, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     return conn
 
 def init_db():
@@ -315,25 +316,32 @@ def role_required(*roles):
 # ─────────────────────────────────────────────
 def recalc_teacher(teacher_id):
     conn = get_db(); c = conn.cursor()
-    rows = c.execute("SELECT e.score, e.comment FROM evaluation e WHERE e.teacher_id=?", (teacher_id,)).fetchall()
-    if not rows:
-        c.execute("DELETE FROM teacher_suggestion WHERE teacher_id=?", (teacher_id,))
-        conn.commit(); conn.close(); return
-    scores   = [r["score"] for r in rows]
-    comments = " ".join(r["comment"] or "" for r in rows)
-    avg      = round(sum(scores)/len(scores), 2)
-    clf      = get_classifier()
-    result   = clf.predict(comments, avg)
-    pred, conf, method, tproba = result["label"], result["confidence"], result["method"], json.dumps(result["text_proba"])
-    suggestion = clf.get_suggestion(avg, pred, conf)
-    existing = c.execute("SELECT id FROM teacher_suggestion WHERE teacher_id=?", (teacher_id,)).fetchone()
-    if existing:
-        c.execute("UPDATE teacher_suggestion SET suggestion_text=?,prediction=?,average_score=?,confidence=?,ml_method=?,text_proba=?,created_at=CURRENT_TIMESTAMP WHERE teacher_id=?",
-                  (suggestion, pred, avg, conf, method, tproba, teacher_id))
-    else:
-        c.execute("INSERT INTO teacher_suggestion (teacher_id,suggestion_text,prediction,average_score,confidence,ml_method,text_proba) VALUES (?,?,?,?,?,?,?)",
-                  (teacher_id, suggestion, pred, avg, conf, method, tproba))
-    conn.commit(); conn.close()
+    try:
+        rows = c.execute("SELECT e.score, e.comment FROM evaluation e WHERE e.teacher_id=?", (teacher_id,)).fetchall()
+        if not rows:
+            c.execute("DELETE FROM teacher_suggestion WHERE teacher_id=?", (teacher_id,))
+            conn.commit()
+            return
+        scores   = [r["score"] for r in rows]
+        comments = " ".join(r["comment"] or "" for r in rows)
+        avg      = round(sum(scores)/len(scores), 2)
+        clf      = get_classifier()
+        result   = clf.predict(comments, avg)
+        pred, conf, method, tproba = result["label"], result["confidence"], result["method"], json.dumps(result["text_proba"])
+        suggestion = clf.get_suggestion(avg, pred, conf)
+        existing = c.execute("SELECT id FROM teacher_suggestion WHERE teacher_id=?", (teacher_id,)).fetchone()
+        if existing:
+            c.execute("UPDATE teacher_suggestion SET suggestion_text=?,prediction=?,average_score=?,confidence=?,ml_method=?,text_proba=?,created_at=CURRENT_TIMESTAMP WHERE teacher_id=?",
+                      (suggestion, pred, avg, conf, method, tproba, teacher_id))
+        else:
+            c.execute("INSERT INTO teacher_suggestion (teacher_id,suggestion_text,prediction,average_score,confidence,ml_method,text_proba) VALUES (?,?,?,?,?,?,?)",
+                      (teacher_id, suggestion, pred, avg, conf, method, tproba))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        app.logger.error(f"recalc_teacher error: {e}")
+    finally:
+        conn.close()
 
 # ════════════════════════════════════════════════════════════════
 #  CRIMSON THEME CSS
@@ -681,18 +689,12 @@ function switchTab(tab) {
 }
 // Dynamic teacher list based on role selection
 function onRoleChange(sel) {
-  const teacherSection = document.getElementById('teacherSection');
-  const blockSection   = document.getElementById('blockSection');
-  const semSection     = document.getElementById('semSection');
-  if (sel.value === 'student') {
-    teacherSection.style.display = 'block';
-    blockSection.style.display   = 'block';
-    semSection.style.display     = 'block';
-  } else {
-    teacherSection.style.display = 'none';
-    blockSection.style.display   = 'none';
-    semSection.style.display     = 'none';
-  }
+  const isStudent = sel.value === 'student';
+  const isTeacher = sel.value === 'teacher';
+  const ids = ['statusSection','teacherSection','blockSection','semSection'];
+  const teacherIds = ['teacherBlockSection','teacherSemSection'];
+  ids.forEach(id => { const el = document.getElementById(id); if(el) el.style.display = isStudent ? 'block' : 'none'; });
+  teacherIds.forEach(id => { const el = document.getElementById(id); if(el) el.style.display = isTeacher ? 'block' : 'none'; });
 }
 // Password match validation
 function setupPwMatch(pwId, confirmId, errId) {
@@ -799,7 +801,7 @@ def _register_form():
       <div class="form-group">
         <label>Role</label>
         <select name="role" onchange="onRoleChange(this)" id="roleSelect">
-          <option value="student">Student</option>
+          <option value="student" selected>Student</option>
           <option value="teacher">Teacher</option>
         </select>
       </div>
@@ -811,7 +813,7 @@ def _register_form():
         </select>
       </div>
       <!-- Student-only fields -->
-      <div id="statusSection" class="form-group">
+      <div id="statusSection" class="form-group" style="display:none">
         <label>Student Status</label>
         <select name="status" id="statusSelect" onchange="onStatusChange(this)">
           <option value="Regular">Regular</option>
@@ -858,8 +860,26 @@ def _register_form():
         </select>
       </div>
 
-      <button type="submit" class="btn btn-primary" style="width:100%;padding:12px;font-size:1rem;margin-top:4px;">Create Account &nbsp;→</button>
+     <button type="submit" class="btn btn-primary" style="width:100%;padding:12px;font-size:1rem;margin-top:4px;">Create Account &nbsp;→</button>
     </form>
+    <script>
+      // Run immediately after form renders
+      (function() {{
+        var s = document.getElementById('statusSection');
+        var tb = document.getElementById('teacherBlockSection');
+        var ts = document.getElementById('teacherSemSection');
+        var bl = document.getElementById('blockSection');
+        var se = document.getElementById('semSection');
+        var te = document.getElementById('teacherSection');
+        // Default is student — show student fields, hide teacher fields
+        if(s)  s.style.display  = 'block';
+        if(bl) bl.style.display = 'block';
+        if(se) se.style.display = 'block';
+        if(te) te.style.display = 'block';
+        if(tb) tb.style.display = 'none';
+        if(ts) ts.style.display = 'none';
+      }})();
+    </script>
 
     <script>
     fetch('/api/teachers').then(r=>r.json()).then(teachers=>{{
@@ -1515,12 +1535,12 @@ def admin_results():
 @role_required("teacher")
 def teacher_dashboard():
     tid = session["user_id"]; conn = get_db()
-    count_evals = conn.execute("SELECT COUNT(*) FROM evaluation WHERE teacher_id=?", (tid,)).fetchone()[0]
+    count_evals = conn.execute("SELECT COUNT(DISTINCT student_id) FROM evaluation WHERE teacher_id=?", (tid,)).fetchone()[0]
     avg_r       = conn.execute("SELECT AVG(score) FROM evaluation WHERE teacher_id=?", (tid,)).fetchone()[0]
     avg_score   = round(avg_r, 2) if avg_r else 0
     ts_raw      = conn.execute("SELECT * FROM teacher_suggestion WHERE teacher_id=?", (tid,)).fetchone()
     ts          = dict(ts_raw) if ts_raw else None
-    student_count = conn.execute("SELECT COUNT(DISTINCT student_id) FROM student_teacher WHERE teacher_id=?", (tid,)).fetchone()[0]
+    student_count = conn.execute("SELECT COUNT(DISTINCT student_id) FROM student_teacher WHERE teacher_id=? AND student_id != 0", (tid,)).fetchone()[0]
     conn.close()
 
     prediction = ts["prediction"] if ts else "—"
@@ -1725,9 +1745,6 @@ def teacher_students():
                 </div>
               </td>
               <td class="text-muted" style="font-size:0.85rem">{s['department'] or '—'}</td>
-              <td>{eval_badge}</td>
-              <td style="color:var(--gold);font-family:'Playfair Display',serif;font-weight:700">{avg_disp}</td>
-              <td class="text-muted" style="font-size:0.82rem">{s['subject'] or '—'}</td>
             </tr>"""
 
         group_html += f"""
@@ -1749,7 +1766,7 @@ def teacher_students():
             <div class="table-wrap" style="margin-top:12px;border:none;border-radius:8px">
               <table>
                 <thead><tr>
-                  <th>Student</th><th>Dept</th><th>Evaluations</th><th>Avg Score</th><th>Subject</th>
+                  <th>Student</th><th>Dept</th>
                 </tr></thead>
                 <tbody>{student_rows}</tbody>
               </table>
@@ -2140,3 +2157,4 @@ if __name__ == "__main__":
     init_db()
 port = int(os.environ.get("PORT", 5000))
 app.run(host="0.0.0.0", port=port)
+#app.run(debug=True, port=5000, threaded=True, use_reloader=False)
