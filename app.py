@@ -1316,9 +1316,12 @@ def admin_dashboard():
     total_users    = conn.execute("SELECT COUNT(*) FROM users WHERE role!='admin'").fetchone()[0]
     total_teachers = conn.execute("SELECT COUNT(*) FROM users WHERE role='teacher'").fetchone()[0]
     total_students = conn.execute("SELECT COUNT(*) FROM users WHERE role='student'").fetchone()[0]
-    total_evals = conn.execute(
-    "SELECT COUNT(DISTINCT student_id || '-' || teacher_id) FROM evaluation"
-).fetchone()[0]
+    total_evals = conn.execute("""
+    SELECT COUNT(DISTINCT e.student_id || '-' || e.teacher_id)
+    FROM evaluation e
+    JOIN users u_t ON e.teacher_id = u_t.id
+    JOIN users u_s ON e.student_id = u_s.id
+""").fetchone()[0]
     recent = conn.execute("""
     SELECT u_t.id as teacher_id, u_t.name as teacher_name,
            COUNT(DISTINCT e.student_id) as student_count,
